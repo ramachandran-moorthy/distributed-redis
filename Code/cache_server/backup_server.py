@@ -1,0 +1,1 @@
+# This file will handle the backup servers for each primary cache server.
