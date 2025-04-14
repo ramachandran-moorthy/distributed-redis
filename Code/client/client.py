@@ -87,49 +87,17 @@ def print_usage():
        
     2. Read records:
        python client.py read <entity> '{"field1": "value1"}'
+       python client.py read <entity> '{"data": {"status": "active"}, "filters": {"age": {"gt": 21}}}'
+       python client.py read <entity> '{"select": ["id", "name", "email"]}'
+       python client.py read <entity> '{"order_by": [{"field": "last_name", "direction": "DESC"}]}'
+
        
     3. Update a record:
        python client.py update <entity> '{"id": 1, "field1": "new_value"}'
+       python client.py update <entity> '{"data": {"status": "inactive"}, "where": "last_login < %s", "where_params": ["2023-01-01"]}'
        
     4. Delete a record:
        python client.py delete <entity> '{"id": 1}'
-       
-    Advanced Operations:
-    -------------------
-    5. Batch create multiple records:
-       python client.py create_batch <entity> '[{"field1": "value1"}, {"field1": "value2"}]'
-       
-    6. Count records with filters:
-       python client.py count <entity> '{"status": "active"}'
-       
-    7. Execute raw SQL (use with caution):
-       python client.py raw '' '{"sql": "SELECT * FROM users WHERE age > %s", "params": [18]}'
-       
-    Advanced Filtering Examples:
-    --------------------------
-    8. Complex read with filters:
-       python client.py read <entity> '{"data": {"status": "active"}, "filters": {"age": {"gt": 21}}}'
-       
-    9. Read with field selection:
-       python client.py read <entity> '{"select": ["id", "name", "email"]}'
-       
-    10. Read with sorting:
-        python client.py read <entity> '{"order_by": [{"field": "last_name", "direction": "DESC"}]}'
-        
-    11. Read with pagination:
-        python client.py read <entity> '{"limit": 10, "offset": 20}'
-        
-    12. Read with joins:
-        python client.py read <entity> '{"join": {"table": "orders", "type": "LEFT", "on": "users.id = orders.user_id"}}'
-        
-    13. Read with grouping:
-        python client.py read <entity> '{"select": "department, COUNT(*) as employee_count", "group_by": "department"}'
-        
-    14. Update with custom where clause:
-        python client.py update <entity> '{"data": {"status": "inactive"}, "where": "last_login < %s", "where_params": ["2023-01-01"]}'
-        
-    15. Delete with returning deleted rows:
-        python client.py delete <entity> '{"id": 5, "returning": true}'
         
     Filter Operators:
     ---------------

@@ -31,10 +31,6 @@ def build_sql_from_query(query_data):
     # Additional query options
     filters = query_data.get("filters", {})
     order_by = query_data.get("order_by", None)
-    limit = query_data.get("limit", None)
-    offset = query_data.get("offset", None)
-    group_by = query_data.get("group_by", None)
-    join = query_data.get("join", None)
     select_fields = query_data.get("select", "*")
     
     if operation == "create":
@@ -45,34 +41,8 @@ def build_sql_from_query(query_data):
         placeholders = ", ".join(["%s"] * len(columns))
         sql = f"INSERT INTO {entity} ({', '.join(columns)}) VALUES ({placeholders})"
         params = tuple(data.values())
-        
-        # Support for returning inserted ID
-        if query_data.get("return_id", False):
-            sql += " RETURNING id"
             
         return sql, params
-        
-    elif operation == "create_batch":
-        # Handle batch inserts
-        if not data or not isinstance(data, list) or len(data) == 0:
-            raise ValueError("Batch create operation requires a list of data objects")
-            
-        # All objects must have the same structure
-        columns = list(data[0].keys())
-        # Generate placeholders for each row
-        placeholders = []
-        values = []
-        
-        for row in data:
-            if set(row.keys()) != set(columns):
-                raise ValueError("All records in batch insert must have the same columns")
-                
-            row_placeholders = ", ".join(["%s"] * len(columns))
-            placeholders.append(f"({row_placeholders})")
-            values.extend(list(row.values()))
-            
-        sql = f"INSERT INTO {entity} ({', '.join(columns)}) VALUES {', '.join(placeholders)}"
-        return sql, tuple(values)
         
     elif operation == "read":
         # Support for selecting specific fields
@@ -83,15 +53,6 @@ def build_sql_from_query(query_data):
             
         sql = f"SELECT {fields_str} FROM {entity}"
         params = []
-        
-        # Handle JOIN operations
-        if join:
-            join_table = join.get("table")
-            join_type = join.get("type", "INNER").upper()
-            join_condition = join.get("on")
-            
-            if join_table and join_condition:
-                sql += f" {join_type} JOIN {join_table} ON {join_condition}"
         
         # Build WHERE clause from both data and filters
         where_conditions = []
@@ -156,13 +117,6 @@ def build_sql_from_query(query_data):
         if where_conditions:
             sql += f" WHERE {' AND '.join(where_conditions)}"
         
-        # Add GROUP BY if specified
-        if group_by:
-            if isinstance(group_by, list):
-                sql += f" GROUP BY {', '.join(group_by)}"
-            else:
-                sql += f" GROUP BY {group_by}"
-        
         # Add ORDER BY if specified
         if order_by:
             if isinstance(order_by, list):
@@ -181,15 +135,6 @@ def build_sql_from_query(query_data):
             else:
                 # Simple string
                 sql += f" ORDER BY {order_by}"
-        
-        # Add LIMIT and OFFSET for pagination
-        if limit is not None:
-            sql += f" LIMIT %s"
-            params.append(int(limit))
-            
-            if offset is not None:
-                sql += f" OFFSET %s"
-                params.append(int(offset))
         
         return sql, tuple(params)
         
@@ -228,12 +173,8 @@ def build_sql_from_query(query_data):
             raise ValueError("Delete operation requires conditions")
             
         sql = f"DELETE FROM {entity} WHERE {conditions}"
-        
-        # Support for returning deleted rows
-        if query_data.get("returning", False):
-            sql += " RETURNING *"
-            
         return sql, params
+        
     else:
         raise ValueError(f"Unsupported operation: {operation}")
 
