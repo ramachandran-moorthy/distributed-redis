@@ -110,29 +110,15 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
         replica_offset = request.offset
         print(f"[PING DEBUG] Replica pinged with offset: {replica_offset}, primary offset: {self.offset}")
         if replica_offset < self.offset:
-            # Here's the missing logic: send the snapshot now
-            peer = context.peer()
-            address = peer.split(":")[-1]  # extract port from something like 'ipv4:127.0.0.1:50053'
-            print(f"[PING DEBUG] Sending snapshot to replica (replica behind) at {address}")
-            try:
-                channel = grpc.insecure_channel(f'localhost:{address}')
-                stub = metadata_cache_channel_pb2_grpc.CacheServiceStub(channel)
-                compressed_data = zlib.compress(str(self.cache).encode())
-                stub.SetSnapshot(metadata_cache_channel_pb2.SnapshotRequest(data=compressed_data))
-                print("[PING DEBUG] Snapshot successfully sent to replica")
-            except grpc.RpcError as e:
-                # If sending the snapshot fails, fallback to replica requesting snapshot
-                self.request_snapshot(address)  # Let the replica handle the snapshot request
-                print(f"[PING ERROR] Failed to send snapshot: {e}")
+            # If the replica is behind, inform it to request the snapshot
+            print(f"[PING DEBUG] Replica is behind, asking it to pull the snapshot from primary")
+            
+            # Instead of sending the snapshot directly, we rely on the replica to pull it.
             return metadata_cache_channel_pb2.PingResponse(up_to_date=False)
 
         print(f"[PING DEBUG] Replica is up-to-date")
         return metadata_cache_channel_pb2.PingResponse(up_to_date=True)
-        #     compressed_data = zlib.compress(str(self.cache).encode())
-        #     print(f"[PING DEBUG] Sending snapshot to replica (replica behind)")
-        #     return metadata_cache_channel_pb2.PingResponse(up_to_date=False)
-        # print(f"[PING DEBUG] Replica is up-to-date")
-        # return metadata_cache_channel_pb2.PingResponse(up_to_date=True)
+        
 
     def request_snapshot(self, primary_port):
         try:
@@ -217,20 +203,6 @@ def register_with_metadata(server_id, port, cluster_id):
         stub = metadata_cache_channel_pb2_grpc.MetadataServiceStub(channel)
         stub.RegisterServer(metadata_cache_channel_pb2.RegisterRequest(server_id=server_id, port=port, cluster_id=cluster_id))
 
-# def register_with_primary(replica_id, replica_port, primary_port):
-#     print("This replica registered with primary!")
-#     with grpc.insecure_channel(f'localhost:{primary_port}') as channel:
-#         stub = metadata_cache_channel_pb2_grpc.CacheServiceStub(channel)
-#         stub.RegisterReplica(metadata_cache_channel_pb2.ReplicaRegisterRequest(replica_id=replica_id, replica_port=replica_port))
-#         # Add ping with offset
-#         try:
-#             pong = stub.PingWithOffset(metadata_cache_channel_pb2.PingRequest(offset=0))  # Start with dummy offset or tracked one
-#             if not pong.up_to_date:
-#                 print(f"[REPLICA DEBUG] Replica is behind. Waiting for snapshot...")
-#             else:
-#                 print(f"[REPLICA DEBUG] Replica is up-to-date")
-#         except grpc.RpcError as e:
-#             print(f"[REPLICA DEBUG] Failed to ping primary: {e}")
 def register_with_primary(replica_id, replica_port, primary_port, cache_server):
     print("This replica registered with primary!")
     with grpc.insecure_channel(f'localhost:{primary_port}') as channel:
@@ -251,22 +223,6 @@ def register_with_primary(replica_id, replica_port, primary_port, cache_server):
                 print(f"[REPLICA DEBUG] Replica is up-to-date")
         except grpc.RpcError as e:
             print(f"[REPLICA DEBUG] Failed to ping primary: {e}")
-    # print("This replica registered with primary!")
-    # with grpc.insecure_channel(f'localhost:{primary_port}') as channel:
-    #     stub = metadata_cache_channel_pb2_grpc.CacheServiceStub(channel)
-    #     stub.RegisterReplica(metadata_cache_channel_pb2.ReplicaRegisterRequest(replica_id=replica_id, replica_port=replica_port))
-        
-    #     try:
-    #         pong = stub.PingWithOffset(metadata_cache_channel_pb2.PingRequest(offset=0))
-    #         if not pong.up_to_date:
-    #             print(f"[REPLICA DEBUG] Replica is behind. Waiting for snapshot...")
-    #             # Start snapshot sync
-    #             cache_server = CacheServer(replica_id)
-    #             cache_server.request_snapshot(primary_port)
-    #         else:
-    #             print(f"[REPLICA DEBUG] Replica is up-to-date")
-    #     except grpc.RpcError as e:
-    #         print(f"[REPLICA DEBUG] Failed to ping primary: {e}")
 
 def serve(server_id, port, is_primary, cluster_id, primary_port=None):
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
