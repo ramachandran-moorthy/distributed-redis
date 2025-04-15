@@ -68,10 +68,10 @@ class MetadataServer(metadata_cache_channel_pb2_grpc.MetadataServiceServicer):
             return metadata_cache_channel_pb2.QueryResponse(reply="No primary cache server available")
 
         with self.lock:
-            print("Inside lock")
-            print("Current primaries in MetadataServer:")
-            for cluster_id, (server_id, _, port) in self.primaries.items():
-                print(f"  Cluster {cluster_id} -> Primary Server {server_id} (Port {port})")
+            # print("Inside lock")
+            # print("Current primaries in MetadataServer:")
+            # for cluster_id, (server_id, _, port) in self.primaries.items():
+            #     print(f"  Cluster {cluster_id} -> Primary Server {server_id} (Port {port})")
 
             # Case 1: Cache hit
             if query_hash in self.query_map:
@@ -104,8 +104,9 @@ class MetadataServer(metadata_cache_channel_pb2_grpc.MetadataServiceServicer):
 
             # Case 2: Cache miss
             else:
-                print("came inside else statement!")
-                # Dynamically query load from all primaries
+                # while integratting with the gateway
+                # print("Cache Miss")
+                # return metadata_cache_channel_pb2.QueryResponse(reply="Data not in cache!")
                 primary_loads = []
                 for (server_id, stub, _) in self.primaries.values():
                     print(f"came inside the for loop for server id" , server_id)
@@ -159,6 +160,14 @@ class MetadataServer(metadata_cache_channel_pb2_grpc.MetadataServiceServicer):
             self.primaries[cluster_id] = (promoted_server_id, stub, promoted_server_port)
             self.query_counts[promoted_server_id] = 0
             print(f"MetadataServer: Set CacheServer {promoted_server_id} as PRIMARY for cluster {cluster_id}")
+            # ✅ Update the query_map
+            if old_primary_id:
+                remapped = 0
+                for query_hash, server_id in list(self.query_map.items()):
+                    if server_id == old_primary_id:
+                        self.query_map[query_hash] = promoted_server_id
+                        remapped += 1
+                print(f"MetadataServer: Remapped {remapped} queries from old primary {old_primary_id} to new primary {promoted_server_id}")
 
         return metadata_cache_channel_pb2.NotifyPromotionResponse(success=True)
 
