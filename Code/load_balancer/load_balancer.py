@@ -179,31 +179,45 @@ class LoadBalancerService(load_balancer_pb2_grpc.CacheServiceServicer, metadata_
         cluster_id = request.cluster_id
         print(f"LoadBalancer: Received promotion notification for CacheServer {promoted_server_id} (cluster {cluster_id}) on port {promoted_server_port}")
 
-        with self.lock:
-            # Remove the old primary for the same cluster if any
-            old_primary_id = None
-            if cluster_id in self.primaries:
-                old_primary_id, _, _ = self.primaries[cluster_id]
-                if old_primary_id in self.query_counts:
-                    del self.query_counts[old_primary_id]
-                print(f"LoadBalancer: Removed old PRIMARY {old_primary_id} for cluster {cluster_id}")
-
-            # Set new primary for the cluster
-            stub = metadata_cache_channel_pb2_grpc.CacheServiceStub(grpc.insecure_channel(f'localhost:{promoted_server_port}'))
-            self.primaries[cluster_id] = (promoted_server_id, stub, promoted_server_port)
-            self.query_counts[promoted_server_id] = 0
-            print(f"LoadBalancer: Set CacheServer {promoted_server_id} as PRIMARY for cluster {cluster_id}")
+        try:
+            # Connect to the new primary to verify it's available
+            channel = grpc.insecure_channel(f'localhost:{promoted_server_port}')
+            stub = metadata_cache_channel_pb2_grpc.CacheServiceStub(channel)
+            # Verify role and connectivity
+            role_response = stub.GetRole(metadata_cache_channel_pb2.EmptyRequest(), timeout=2)
             
-            # Update the query_map
-            if old_primary_id:
-                remapped = 0
-                for query_hash, server_id in list(self.query_map.items()):
-                    if server_id == old_primary_id:
-                        self.query_map[query_hash] = promoted_server_id
-                        remapped += 1
-                print(f"LoadBalancer: Remapped {remapped} queries from old primary {old_primary_id} to new primary {promoted_server_id}")
-
-        return metadata_cache_channel_pb2.NotifyPromotionResponse(success=True)
+            if not role_response.is_primary:
+                print(f"LoadBalancer: Warning - Server {promoted_server_id} doesn't think it's primary yet")
+                # We'll still update our records since Sentinel says it's primary
+                
+            with self.lock:
+                # Remove the old primary for the same cluster if any
+                old_primary_id = None
+                if cluster_id in self.primaries:
+                    old_primary_id, _, _ = self.primaries[cluster_id]
+                    if old_primary_id in self.query_counts:
+                        del self.query_counts[old_primary_id]
+                    print(f"LoadBalancer: Removed old PRIMARY {old_primary_id} for cluster {cluster_id}")
+                
+                # Set new primary for the cluster
+                self.primaries[cluster_id] = (promoted_server_id, stub, promoted_server_port)
+                self.query_counts[promoted_server_id] = 0
+                print(f"LoadBalancer: Set CacheServer {promoted_server_id} as PRIMARY for cluster {cluster_id}")
+                
+                # Update the query_map
+                if old_primary_id:
+                    remapped = 0
+                    for query_hash, server_id in list(self.query_map.items()):
+                        if server_id == old_primary_id:
+                            self.query_map[query_hash] = promoted_server_id
+                            remapped += 1
+                    print(f"LoadBalancer: Remapped {remapped} queries from old primary {old_primary_id} to new primary {promoted_server_id}")
+                
+            return metadata_cache_channel_pb2.NotifyPromotionResponse(success=True)
+        
+        except Exception as e:
+            print(f"LoadBalancer: Failed to connect to new primary: {e}")
+            return metadata_cache_channel_pb2.NotifyPromotionResponse(success=False)
 
 def register_with_consul(port):
     """Register this load balancer with Consul"""

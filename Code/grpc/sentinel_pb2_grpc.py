@@ -26,7 +26,7 @@ if _version_not_supported:
 
 
 class SentinelServiceStub(object):
-    """Service used by cache servers to register themselves with the sentinel.
+    """Sentinel service definition
     """
 
     def __init__(self, channel):
@@ -35,8 +35,8 @@ class SentinelServiceStub(object):
         Args:
             channel: A grpc.Channel.
         """
-        self.RegisterCacheServer = channel.unary_unary(
-                '/sentinel.SentinelService/RegisterCacheServer',
+        self.RegisterServer = channel.unary_unary(
+                '/sentinel.SentinelService/RegisterServer',
                 request_serializer=sentinel__pb2.CacheServerRegistrationRequest.SerializeToString,
                 response_deserializer=sentinel__pb2.CacheServerRegistrationResponse.FromString,
                 _registered_method=True)
@@ -45,20 +45,34 @@ class SentinelServiceStub(object):
                 request_serializer=sentinel__pb2.PrimaryForClusterRequest.SerializeToString,
                 response_deserializer=sentinel__pb2.PrimaryForClusterResponse.FromString,
                 _registered_method=True)
+        self.HealthCheck = channel.unary_unary(
+                '/sentinel.SentinelService/HealthCheck',
+                request_serializer=sentinel__pb2.HealthCheckRequest.SerializeToString,
+                response_deserializer=sentinel__pb2.HealthCheckResponse.FromString,
+                _registered_method=True)
 
 
 class SentinelServiceServicer(object):
-    """Service used by cache servers to register themselves with the sentinel.
+    """Sentinel service definition
     """
 
-    def RegisterCacheServer(self, request, context):
-        """Missing associated documentation comment in .proto file."""
+    def RegisterServer(self, request, context):
+        """Called by a cache server to register itself
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
     def GetPrimaryForCluster(self, request, context):
-        """Missing associated documentation comment in .proto file."""
+        """Called by a replica to find the current primary of its cluster
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def HealthCheck(self, request, context):
+        """Add this to the SentinelService
+        """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -66,8 +80,8 @@ class SentinelServiceServicer(object):
 
 def add_SentinelServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
-            'RegisterCacheServer': grpc.unary_unary_rpc_method_handler(
-                    servicer.RegisterCacheServer,
+            'RegisterServer': grpc.unary_unary_rpc_method_handler(
+                    servicer.RegisterServer,
                     request_deserializer=sentinel__pb2.CacheServerRegistrationRequest.FromString,
                     response_serializer=sentinel__pb2.CacheServerRegistrationResponse.SerializeToString,
             ),
@@ -75,6 +89,11 @@ def add_SentinelServiceServicer_to_server(servicer, server):
                     servicer.GetPrimaryForCluster,
                     request_deserializer=sentinel__pb2.PrimaryForClusterRequest.FromString,
                     response_serializer=sentinel__pb2.PrimaryForClusterResponse.SerializeToString,
+            ),
+            'HealthCheck': grpc.unary_unary_rpc_method_handler(
+                    servicer.HealthCheck,
+                    request_deserializer=sentinel__pb2.HealthCheckRequest.FromString,
+                    response_serializer=sentinel__pb2.HealthCheckResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -85,11 +104,11 @@ def add_SentinelServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class SentinelService(object):
-    """Service used by cache servers to register themselves with the sentinel.
+    """Sentinel service definition
     """
 
     @staticmethod
-    def RegisterCacheServer(request,
+    def RegisterServer(request,
             target,
             options=(),
             channel_credentials=None,
@@ -102,7 +121,7 @@ class SentinelService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/sentinel.SentinelService/RegisterCacheServer',
+            '/sentinel.SentinelService/RegisterServer',
             sentinel__pb2.CacheServerRegistrationRequest.SerializeToString,
             sentinel__pb2.CacheServerRegistrationResponse.FromString,
             options,
@@ -132,6 +151,33 @@ class SentinelService(object):
             '/sentinel.SentinelService/GetPrimaryForCluster',
             sentinel__pb2.PrimaryForClusterRequest.SerializeToString,
             sentinel__pb2.PrimaryForClusterResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def HealthCheck(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/sentinel.SentinelService/HealthCheck',
+            sentinel__pb2.HealthCheckRequest.SerializeToString,
+            sentinel__pb2.HealthCheckResponse.FromString,
             options,
             channel_credentials,
             insecure,

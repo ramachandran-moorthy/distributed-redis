@@ -184,18 +184,20 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
                             print(f"CacheServer {self.server_id}: Retrying ping to replica...")
                             self.handle_replica_timeout(stub)
 
-# New helper function: register with Sentinel instead of directly with primary.
 def register_with_sentinel(server_id, port, cluster_id, sentinel_address="localhost", sentinel_port=50060):
+    """
+    Register with the sentinel service to determine role
+    """
     try:
         channel = grpc.insecure_channel(f"{sentinel_address}:{sentinel_port}")
         stub = sentinel_pb2_grpc.SentinelServiceStub(channel)
         request = sentinel_pb2.CacheServerRegistrationRequest(server_id=server_id, port=port, cluster_id=cluster_id)
-        response = stub.RegisterCacheServer(request)
+        response = stub.RegisterServer(request)
         print(f"CacheServer {server_id}: Registered with Sentinel. Is primary? {response.is_primary}")
-        return response.is_primary
+        return response.is_primary, response.primary_port
     except Exception as e:
         print(f"CacheServer {server_id}: Error registering with Sentinel: {e}")
-        return False
+        return False, None
     
 def register_with_primary(replica_id, replica_port, primary_port, cache_server):
     """
@@ -241,9 +243,6 @@ def register_with_primary(replica_id, replica_port, primary_port, cache_server):
     
 def register_with_load_balancer(server_id, port, cluster_id, load_balancer_address="localhost", load_balancer_port=50053):
     try:
-        import grpc
-        import metadata_cache_channel_pb2
-        import metadata_cache_channel_pb2_grpc
         channel = grpc.insecure_channel(f"{load_balancer_address}:{load_balancer_port}")
         stub = metadata_cache_channel_pb2_grpc.MetadataServiceStub(channel)
         # We use the NotifyPromotion endpoint here as a way to register the primary.
@@ -273,16 +272,15 @@ def get_primary_port(cluster_id, sentinel_address="localhost", sentinel_port=500
     return None
 
 def serve(server_id, port, cluster_id, primary_port=None):
-    assigned_as_primary = register_with_sentinel(server_id, port, cluster_id)
+    # Register with the sentinel to determine role
+    assigned_as_primary, sentinel_primary_port = register_with_sentinel(server_id, port, cluster_id)
     
-    # If the server is a replica and primary_port is not provided,
-    # query the sentinel to get the primary port.
-    if not assigned_as_primary:
-        if primary_port is None:
-            primary_port = get_primary_port(cluster_id)
-            if primary_port is None:
-                print("No primary found for this cluster. Cannot register as replica.")
-                return
+    # If we're a replica and primary_port wasn't specified, use the one from sentinel
+    if not assigned_as_primary and primary_port is None:
+        primary_port = sentinel_primary_port
+        if primary_port == 0 or primary_port is None:
+            print(f"CacheServer {server_id}: No primary port provided by Sentinel. Cannot register as replica.")
+            return
 
     cache_server = CacheServer(server_id, is_primary=assigned_as_primary, cluster_id=cluster_id)
     
@@ -292,7 +290,7 @@ def serve(server_id, port, cluster_id, primary_port=None):
     server.start()
 
     if assigned_as_primary:
-        register_with_load_balancer(server_id, port, cluster_id)
+        # No need to register with load balancer - Sentinel has already done this
         threading.Thread(target=cache_server.replica_handler, daemon=True).start()
     else:
         print(f"CacheServer {server_id}: Operating as REPLICA. Registering with current primary on port {primary_port}...")

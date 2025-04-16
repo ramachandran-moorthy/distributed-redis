@@ -24,21 +24,25 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0esentinel.proto\x12\x08sentinel\".\n\x18PrimaryForClusterRequest\x12\x12\n\ncluster_id\x18\x01 \x01(\x05\"K\n\x19PrimaryForClusterResponse\x12\r\n\x05\x66ound\x18\x01 \x01(\x08\x12\x11\n\tserver_id\x18\x02 \x01(\x05\x12\x0c\n\x04port\x18\x03 \x01(\x05\"U\n\x1e\x43\x61\x63heServerRegistrationRequest\x12\x11\n\tserver_id\x18\x01 \x01(\x05\x12\x0c\n\x04port\x18\x02 \x01(\x05\x12\x12\n\ncluster_id\x18\x03 \x01(\x05\"\\\n\x1f\x43\x61\x63heServerRegistrationResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x12\n\nis_primary\x18\x02 \x01(\x08\x12\x14\n\x0cprimary_port\x18\x03 \x01(\x05\x32\xde\x01\n\x0fSentinelService\x12j\n\x13RegisterCacheServer\x12(.sentinel.CacheServerRegistrationRequest\x1a).sentinel.CacheServerRegistrationResponse\x12_\n\x14GetPrimaryForCluster\x12\".sentinel.PrimaryForClusterRequest\x1a#.sentinel.PrimaryForClusterResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0esentinel.proto\x12\x08sentinel\"U\n\x1e\x43\x61\x63heServerRegistrationRequest\x12\x12\n\ncluster_id\x18\x01 \x01(\x05\x12\x11\n\tserver_id\x18\x02 \x01(\x05\x12\x0c\n\x04port\x18\x03 \x01(\x05\"\\\n\x1f\x43\x61\x63heServerRegistrationResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x12\x12\n\nis_primary\x18\x02 \x01(\x08\x12\x14\n\x0cprimary_port\x18\x03 \x01(\x05\".\n\x18PrimaryForClusterRequest\x12\x12\n\ncluster_id\x18\x01 \x01(\x05\"K\n\x19PrimaryForClusterResponse\x12\r\n\x05\x66ound\x18\x01 \x01(\x08\x12\x11\n\tserver_id\x18\x02 \x01(\x05\x12\x0c\n\x04port\x18\x03 \x01(\x05\"5\n\x12HealthCheckRequest\x12\x11\n\tserver_id\x18\x01 \x01(\x05\x12\x0c\n\x04port\x18\x02 \x01(\x05\"&\n\x13HealthCheckResponse\x12\x0f\n\x07healthy\x18\x01 \x01(\x08\x32\xa5\x02\n\x0fSentinelService\x12\x65\n\x0eRegisterServer\x12(.sentinel.CacheServerRegistrationRequest\x1a).sentinel.CacheServerRegistrationResponse\x12_\n\x14GetPrimaryForCluster\x12\".sentinel.PrimaryForClusterRequest\x1a#.sentinel.PrimaryForClusterResponse\x12J\n\x0bHealthCheck\x12\x1c.sentinel.HealthCheckRequest\x1a\x1d.sentinel.HealthCheckResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'sentinel_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_PRIMARYFORCLUSTERREQUEST']._serialized_start=28
-  _globals['_PRIMARYFORCLUSTERREQUEST']._serialized_end=74
-  _globals['_PRIMARYFORCLUSTERRESPONSE']._serialized_start=76
-  _globals['_PRIMARYFORCLUSTERRESPONSE']._serialized_end=151
-  _globals['_CACHESERVERREGISTRATIONREQUEST']._serialized_start=153
-  _globals['_CACHESERVERREGISTRATIONREQUEST']._serialized_end=238
-  _globals['_CACHESERVERREGISTRATIONRESPONSE']._serialized_start=240
-  _globals['_CACHESERVERREGISTRATIONRESPONSE']._serialized_end=332
-  _globals['_SENTINELSERVICE']._serialized_start=335
-  _globals['_SENTINELSERVICE']._serialized_end=557
+  _globals['_CACHESERVERREGISTRATIONREQUEST']._serialized_start=28
+  _globals['_CACHESERVERREGISTRATIONREQUEST']._serialized_end=113
+  _globals['_CACHESERVERREGISTRATIONRESPONSE']._serialized_start=115
+  _globals['_CACHESERVERREGISTRATIONRESPONSE']._serialized_end=207
+  _globals['_PRIMARYFORCLUSTERREQUEST']._serialized_start=209
+  _globals['_PRIMARYFORCLUSTERREQUEST']._serialized_end=255
+  _globals['_PRIMARYFORCLUSTERRESPONSE']._serialized_start=257
+  _globals['_PRIMARYFORCLUSTERRESPONSE']._serialized_end=332
+  _globals['_HEALTHCHECKREQUEST']._serialized_start=334
+  _globals['_HEALTHCHECKREQUEST']._serialized_end=387
+  _globals['_HEALTHCHECKRESPONSE']._serialized_start=389
+  _globals['_HEALTHCHECKRESPONSE']._serialized_end=427
+  _globals['_SENTINELSERVICE']._serialized_start=430
+  _globals['_SENTINELSERVICE']._serialized_end=723
 # @@protoc_insertion_point(module_scope)

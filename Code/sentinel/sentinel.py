@@ -17,12 +17,183 @@ import sentinel_pb2_grpc
 import metadata_cache_channel_pb2
 import metadata_cache_channel_pb2_grpc
 
-# List of cache servers by cluster
-# We'll use a dictionary mapping cluster_id to a structure with 'primary' and a list of 'replicas'
-registered_cache_servers = {}  # { cluster_id: { "primary": {server_id, port}, "replicas": [{server_id, port}, ...] } }
-
+# Sentinel configuration
+SENTINEL_PORT = 50060
 CHECK_INTERVAL = 5  # seconds
-SENTINEL_PORT = 50060  # gRPC port for the SentinelService
+
+def notify_load_balancer(new_primary, cluster_id, load_balancer_address="localhost", load_balancer_port=50053, max_retries=3):
+    """
+    Notifies the load balancer that the primary has changed.
+    new_primary is a tuple: (server_id, port)
+    """
+    for attempt in range(max_retries):
+        try:
+            channel = grpc.insecure_channel(f"{load_balancer_address}:{load_balancer_port}")
+            stub = metadata_cache_channel_pb2_grpc.MetadataServiceStub(channel)
+            request = metadata_cache_channel_pb2.NotifyPromotionRequest(
+                server_id=new_primary[0],
+                port=new_primary[1],
+                cluster_id=cluster_id
+            )
+            response = stub.NotifyPromotion(request)
+            if response.success:
+                print(f"Sentinel: Notified load balancer about new primary {new_primary[0]} in cluster {cluster_id}.")
+                return True
+            else:
+                print("Sentinel: Load balancer failed to acknowledge promotion.")
+        except Exception as e:
+            print(f"Sentinel: Error notifying load balancer (attempt {attempt+1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(1)  # Wait before retrying
+    
+    print(f"Sentinel: Failed to notify load balancer after {max_retries} attempts")
+    return False
+
+class SentinelServiceServicer(sentinel_pb2_grpc.SentinelServiceServicer):
+    def __init__(self):
+        # self.clusters stores the state per cluster:
+        # Key: cluster_id, Value: { 'primary': (server_id, port), 'replicas': [ (server_id, port), ... ] }
+        self.clusters = {}
+        self.lock = threading.Lock()
+        # Track server health: {port: {'failed_checks': count, 'last_check': timestamp}}
+        self.server_health = {}
+        self.HEALTH_THRESHOLD = 3  # Mark as down after 3 failed checks
+
+    def RegisterServer(self, request, context):
+        """
+        RPC for cache servers to register.
+        If no primary exists in the cluster or if the current primary is unreachable,
+        assign this server as primary; otherwise, register as a replica.
+        """
+        cluster_id = request.cluster_id
+        server_id = request.server_id
+        port = request.port
+        is_primary = False
+
+        with self.lock:
+            if cluster_id not in self.clusters:
+                self.clusters[cluster_id] = {'primary': None, 'replicas': []}
+            cluster = self.clusters[cluster_id]
+            
+            # Initialize health tracking for this server
+            self.server_health[port] = {'failed_checks': 0, 'last_check': time.time()}
+            
+            if cluster['primary'] is None:
+                # No primary exists: assign the new server as primary.
+                cluster['primary'] = (server_id, port)
+                is_primary = True
+                print(f"Sentinel: CacheServer {server_id} becomes PRIMARY for cluster {cluster_id}")
+            else:
+                # Primary exists - check if it's healthy according to our health tracking
+                primary_port = cluster['primary'][1]
+                if primary_port in self.server_health and self.server_health[primary_port]['failed_checks'] >= self.HEALTH_THRESHOLD:
+                    # Existing primary is marked as down, promote this server
+                    old_primary = cluster['primary']
+                    cluster['primary'] = (server_id, port)
+                    is_primary = True
+                    print(f"Sentinel: Previous primary {old_primary[0]} in cluster {cluster_id} is down. CacheServer {server_id} becomes new PRIMARY.")
+                    # Only notify if the primary was actually down
+                    notify_load_balancer((server_id, port), cluster_id)
+                else:
+                    # Primary exists and is healthy, register as replica
+                    cluster['replicas'].append((server_id, port))
+                    print(f"Sentinel: CacheServer {server_id} registered as REPLICA for cluster {cluster_id}")
+            
+            primary_port = cluster['primary'][1] if cluster['primary'] else 0
+        
+        return sentinel_pb2.CacheServerRegistrationResponse(success=True, is_primary=is_primary, primary_port=primary_port)
+
+    def _check_server_health(self, port):
+        """
+        Performs a health check on a server and updates its health status.
+        Returns True if server is healthy, False otherwise.
+        """
+        try:
+            channel = grpc.insecure_channel(f"localhost:{port}")
+            stub = metadata_cache_channel_pb2_grpc.CacheServiceStub(channel)
+            # Attempt a health check with a short timeout
+            _ = stub.GetLoad(metadata_cache_channel_pb2.EmptyRequest(), timeout=2)
+            
+            # Reset failed checks on success
+            with self.lock:
+                if port in self.server_health:
+                    self.server_health[port]['failed_checks'] = 0
+                    self.server_health[port]['last_check'] = time.time()
+            return True
+        except Exception:
+            # Increment failed checks
+            with self.lock:
+                if port in self.server_health:
+                    self.server_health[port]['failed_checks'] += 1
+                    self.server_health[port]['last_check'] = time.time()
+                    failed_count = self.server_health[port]['failed_checks']
+                    print(f"Sentinel: Health check failed for server on port {port} ({failed_count}/{self.HEALTH_THRESHOLD})")
+                    if failed_count >= self.HEALTH_THRESHOLD:
+                        print(f"Sentinel: Server on port {port} marked as DOWN")
+            return False
+        
+def run_sentinel_monitor(servicer):
+    """
+    Periodically checks the health of registered primary and replica servers.
+    Promotes replicas if the primary fails health checks and notifies the load balancer.
+    """
+    print("Sentinel monitor started.")
+    while True:
+        time.sleep(CHECK_INTERVAL)
+        
+        # First perform health checks on all registered servers
+        with servicer.lock:
+            # Get a list of all servers to check (both primaries and replicas)
+            servers_to_check = []
+            for cluster_id, cluster in servicer.clusters.items():
+                if cluster['primary']:
+                    servers_to_check.append((cluster_id, *cluster['primary']))  # (cluster_id, server_id, port)
+                for replica in cluster['replicas']:
+                    servers_to_check.append((cluster_id, *replica))  # (cluster_id, server_id, port)
+            
+        # Check each server's health (outside the lock to avoid blocking)
+        for cluster_id, server_id, port in servers_to_check:
+            servicer._check_server_health(port)
+            
+        # Now handle any necessary failovers
+        with servicer.lock:
+            for cluster_id, cluster in list(servicer.clusters.items()):
+                primary = cluster.get('primary')
+                if primary:
+                    primary_id, primary_port = primary
+                    
+                    # Check if primary is marked as down
+                    if (primary_port in servicer.server_health and 
+                        servicer.server_health[primary_port]['failed_checks'] >= servicer.HEALTH_THRESHOLD):
+                        print(f"Sentinel Monitor: Primary {primary_id} in cluster {cluster_id} is down.")
+                        
+                        # Find a healthy replica to promote
+                        new_primary = None
+                        for i, replica in enumerate(list(cluster['replicas'])):
+                            replica_id, replica_port = replica
+                            if (replica_port not in servicer.server_health or 
+                                servicer.server_health[replica_port]['failed_checks'] < servicer.HEALTH_THRESHOLD):
+                                new_primary = replica
+                                cluster['replicas'].pop(i)
+                                break
+                        
+                        if new_primary:
+                            # Promote the healthy replica
+                            cluster['primary'] = new_primary
+                            print(f"Sentinel Monitor: Promoted replica {new_primary[0]} to PRIMARY in cluster {cluster_id}.")
+                            
+                            # Notify the load balancer about the new primary
+                            notify_load_balancer(new_primary, cluster_id)
+                            
+                            # Attempt to notify the new primary about its promotion
+                            try:
+                                channel = grpc.insecure_channel(f"localhost:{new_primary[1]}")
+                                stub = metadata_cache_channel_pb2_grpc.CacheServiceStub(channel)
+                                stub.PromoteToPrimary(metadata_cache_channel_pb2.EmptyRequest())
+                            except Exception as e:
+                                print(f"Sentinel Monitor: Failed to notify new primary about promotion: {e}")
+                        else:
+                            print(f"Sentinel Monitor: No healthy replicas available in cluster {cluster_id}. Primary remains marked as down.")
 
 def register_with_consul(service_name="sentinel", service_port=SENTINEL_PORT):
     try:
@@ -39,110 +210,18 @@ def register_with_consul(service_name="sentinel", service_port=SENTINEL_PORT):
     except Exception as e:
         print(f"Sentinel Consul registration failed: {e}")
 
-class SentinelServiceServicer(sentinel_pb2_grpc.SentinelServiceServicer):
-    def RegisterCacheServer(self, request, context):
-        cluster_id = request.cluster_id
-        server_info = {"server_id": request.server_id, "port": request.port}
-        is_primary = False
-
-        # Check if there's an existing primary and if it's alive.
-        primary_exists = cluster_id in registered_cache_servers and "primary" in registered_cache_servers[cluster_id]
-        if primary_exists:
-            existing_primary = registered_cache_servers[cluster_id]["primary"]
-            try:
-                with grpc.insecure_channel(f"localhost:{existing_primary['port']}") as channel:
-                    stub = metadata_cache_channel_pb2_grpc.CacheServiceStub(channel)
-                    # Use a short timeout health-check call.
-                    _ = stub.GetLoad(metadata_cache_channel_pb2.EmptyRequest(), timeout=2)
-                # If the call succeeds, keep existing primary.
-                registered_cache_servers[cluster_id]["replicas"].append(server_info)
-                print(f"Sentinel: CacheServer {request.server_id} registered as REPLICA in cluster {cluster_id}.")
-            except Exception as e:
-                # Existing primary is down; assign this new one as primary.
-                registered_cache_servers[cluster_id] = {"primary": server_info, "replicas": []}
-                is_primary = True
-                print(f"Sentinel: Existing primary unreachable; CacheServer {request.server_id} becomes PRIMARY in cluster {cluster_id}.")
-        else:
-            # No primary registered yet for this cluster.
-            registered_cache_servers[cluster_id] = {"primary": server_info, "replicas": []}
-            is_primary = True
-            print(f"Sentinel: CacheServer {request.server_id} becomes PRIMARY in cluster {cluster_id}.")
-
-        return sentinel_pb2.CacheServerRegistrationResponse(success=True, is_primary=is_primary)
-
-    def GetPrimaryForCluster(self, request, context):
-        cluster_id = request.cluster_id
-        if cluster_id in registered_cache_servers and "primary" in registered_cache_servers[cluster_id]:
-            primary = registered_cache_servers[cluster_id]["primary"]
-            print(f"Sentinel: Primary for cluster {cluster_id} is {primary['server_id']} on port {primary['port']}")
-            return sentinel_pb2.PrimaryForClusterResponse(found=True, server_id=primary["server_id"], port=primary["port"])
-        else:
-            print(f"Sentinel: No primary found for cluster {cluster_id}")
-            return sentinel_pb2.PrimaryForClusterResponse(found=False, server_id=0, port=0)
-        
-
-def notify_load_balancer(new_primary, cluster_id, load_balancer_address="localhost", load_balancer_port=50053):
-    try:
-        channel = grpc.insecure_channel(f"{load_balancer_address}:{load_balancer_port}")
-        stub = metadata_cache_channel_pb2_grpc.MetadataServiceStub(channel)
-        request = metadata_cache_channel_pb2.NotifyPromotionRequest(
-            server_id=new_primary["server_id"],
-            port=new_primary["port"],
-            cluster_id=cluster_id
-        )
-        response = stub.NotifyPromotion(request)
-        if response.success:
-            print(f"Sentinel: Notified load balancer about new primary {new_primary['server_id']} in cluster {cluster_id}.")
-        else:
-            print("Sentinel: Load balancer failed to acknowledge promotion.")
-    except Exception as e:
-        print(f"Sentinel: Error notifying load balancer: {e}")
-
-
-def run_sentinel_monitor():
-    print("Sentinel monitor started.")
-    while True:
-        time.sleep(CHECK_INTERVAL)
-        for cluster_id, servers in list(registered_cache_servers.items()):
-            primary = servers.get("primary")
-            if primary:
-                try:
-                    # Attempt a simple health check RPC, for example, GetLoad.
-                    with grpc.insecure_channel(f"localhost:{primary['port']}") as channel:
-                        stub = metadata_cache_channel_pb2_grpc.CacheServiceStub(channel)
-                        # We'll use GetLoad as a proxy for health; you can choose a dedicated health check method.
-                        load_response = stub.GetLoad(metadata_cache_channel_pb2.EmptyRequest(), timeout=2)
-                        # If the call succeeds, we assume the primary is alive.
-                        print(f"Sentinel: Primary CacheServer {primary['server_id']} in cluster {cluster_id} is alive (load: {load_response.load}).")
-                except Exception as e:
-                    print(f"Sentinel: Primary CacheServer {primary['server_id']} in cluster {cluster_id} is unreachable or down: {e}")
-                    # Mark primary as stale; if replicas exist, promote one.
-                    if servers.get("replicas"):
-                        new_primary = servers["replicas"].pop(0)
-                        servers["primary"] = new_primary
-                        print(f"Sentinel: Promoted CacheServer {new_primary['server_id']} to PRIMARY in cluster {cluster_id}.")
-                        notify_load_balancer(new_primary, cluster_id)
-                    else:
-                        print(f"Sentinel: No replicas available in cluster {cluster_id}. Removing stale primary.")
-                        # Remove the stale registration
-                        del registered_cache_servers[cluster_id]
-            else:
-                print(f"Sentinel: No primary registered for cluster {cluster_id}.")
-
-def serve_sentinel_service():
+def serve_sentinel_service(servicer):
     server = grpc.server(concurrent.futures.ThreadPoolExecutor(max_workers=10))
-    sentinel_pb2_grpc.add_SentinelServiceServicer_to_server(SentinelServiceServicer(), server)
+    sentinel_pb2_grpc.add_SentinelServiceServicer_to_server(servicer, server)
     server.add_insecure_port(f"[::]:{SENTINEL_PORT}")
     server.start()
     print(f"Sentinel gRPC service started on port {SENTINEL_PORT}")
     server.wait_for_termination()
 
 if __name__ == "__main__":
-    # Register sentinel with Consul immediately on start.
     register_with_consul()
-    
-    # Start the sentinel gRPC service in a separate thread.
-    threading.Thread(target=serve_sentinel_service, daemon=True).start()
-    
-    # Run the existing sentinel monitoring logic.
-    run_sentinel_monitor()
+    servicer = SentinelServiceServicer()
+    # Start the gRPC server in a daemon thread.
+    threading.Thread(target=serve_sentinel_service, args=(servicer,), daemon=True).start()
+    # Run the monitor loop in the main thread.
+    run_sentinel_monitor(servicer)
