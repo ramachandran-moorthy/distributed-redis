@@ -23,6 +23,37 @@ backend_health = {
 }
 health_lock = threading.Lock()
 
+# Global variable for load balancer address
+load_balancer_address = "localhost:50053"  # Default, will be updated from Consul
+
+def discover_load_balancer():
+    """Discover load balancer from Consul"""
+    global load_balancer_address
+    try:
+        c = consul.Consul()
+        services = c.agent.services()
+        for service in services.values():
+            if service.get("Service") == "load-balancer":
+                address = service.get("Address", "localhost")
+                port = service.get("Port", 50053)
+                load_balancer_address = f"{address}:{port}"
+                print(f"Gateway: Discovered load balancer at {load_balancer_address}")
+                return True
+        print("Gateway: No load balancer found in Consul registry")
+        return False
+    except Exception as e:
+        print(f"Gateway: Error connecting to Consul: {e}")
+        return False
+    
+def create_consistent_cache_key(entity, operation, data):
+    """Create a consistent cache key by sorting dictionary keys"""
+    # Sort the data dictionary keys to ensure consistent ordering
+    if isinstance(data, dict):
+        serialized_data = json.dumps(data, sort_keys=True)
+    else:
+        serialized_data = json.dumps(data)
+    return f"{entity}:{operation}:{serialized_data}"
+
 def build_sql_from_query(query_data):
     entity = query_data.get("entity")
     operation = query_data.get("operation")
@@ -192,16 +223,21 @@ class GatewayService(gateway_pb2_grpc.GatewayServiceServicer):
             is_backend_healthy = backend_health["is_healthy"]
         
         # Build a cache key using the entity, operation, and data.
-        cache_key = f"{query_data.get('entity')}:{query_data.get('operation')}:" + json.dumps(query_data.get("data", {}))
+        cache_key = create_consistent_cache_key(query_data.get('entity'), query_data.get('operation'), query_data.get("data", {}))
         print(f"Gateway: Using cache key {cache_key}")
 
+        # Attempt to discover load balancer if address isn't set
+        global load_balancer_address
+        if load_balancer_address is None:
+            discover_load_balancer()
+
+        # Check cache via load balancer
         try:
-            # Check cache via load balancer.
-            with grpc.insecure_channel("localhost:50053") as cache_channel:
+            with grpc.insecure_channel(load_balancer_address) as cache_channel:
                 cache_stub = load_balancer_pb2_grpc.CacheServiceStub(cache_channel)
                 cache_resp = cache_stub.GetCachedData(load_balancer_pb2.CacheRequest(key=cache_key))
         except grpc.RpcError as e:
-            print(f"Cache service error: {e}")
+            print(f"Gateway: Cache service error: {e}")
             if not is_backend_healthy:
                 return gateway_pb2.GatewayResponse(response=json.dumps({
                     "error": "Service unavailable",
@@ -246,14 +282,14 @@ class GatewayService(gateway_pb2_grpc.GatewayServiceServicer):
             
             # Try to cache the result, but don't fail if cache is down
             try:
-                with grpc.insecure_channel("localhost:50053") as cache_channel:
+                with grpc.insecure_channel(load_balancer_address) as cache_channel:
                     cache_stub = load_balancer_pb2_grpc.CacheServiceStub(cache_channel)
                     _ = cache_stub.SetCachedData(load_balancer_pb2.CacheSetRequest(key=cache_key, value=backend_resp.result))
             except grpc.RpcError as e:
-                print(f"Warning: Failed to cache result: {e}")
+                print(f"Gateway: Warning: Failed to cache result: {e}")
             
             return gateway_pb2.GatewayResponse(response=backend_resp.result)
-
+        
 def check_backend_health():
     """Thread to check backend health by sending requests every 0.5 seconds"""
     global backend_health
@@ -314,10 +350,15 @@ def serve():
     port = 50051
     server.add_insecure_port(f"[::]:{port}")
     
+    # Try to discover load balancer from Consul
+    global load_balancer_address
+    if not discover_load_balancer():
+        print("Gateway: Using default load balancer address:", load_balancer_address)
+    
     try:
         register_with_consul(service_name="gateway-server", service_port=port)
     except Exception as e:
-        print(f"Warning: Consul registration failed: {e}")
+        print(f"Gateway: Warning: Consul registration failed: {e}")
     
     # Start health check thread
     health_thread = threading.Thread(target=check_backend_health, daemon=True)
