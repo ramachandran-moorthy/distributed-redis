@@ -22,7 +22,7 @@ PING_TIMEOUT = 3
 MAX_RETRY = 2
 
 class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
-    def __init__(self, server_id, is_primary=False, cluster_id=None):
+    def __init__(self, server_id, is_primary=False, cluster_id=None, ack_policy=0):
         self.server_id = server_id
         self.cache = {}  # hash -> result
         self.is_primary = is_primary
@@ -32,8 +32,11 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
         self.cluster_id = cluster_id
         self.replication_id = str(uuid.uuid4())
         self.offset = 0
+        self.replication_backlog = []  # List of (offset, query_hash, result) tuples
+        self.backlog_max_size = 100
+        self.ack_policy = ack_policy  # 0: no wait, 1-N: wait for N acks
+        self.replication_timeout_ms = 1000
 
-    # (Existing gRPC methods remain unchanged)
     def GetResult(self, request, context):
         query_hash = request.query_hash
         with self.lock:
@@ -41,16 +44,96 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
             found = query_hash in self.cache
         print(f"CacheServer {self.server_id}: GetResult for hash {query_hash}, found: {found}")
         return metadata_cache_channel_pb2.CacheResponse(result=result, found=found)
+    
+    def wait_for_replicas(self, query_hash, result, num_replicas, timeout_ms):
+        """Wait for at least num_replicas to acknowledge receiving the data"""
+        if not self.replica_stubs or len(self.replica_stubs) < num_replicas:
+            # Still do async replication but return false if we can't satisfy the policy
+            self.send_to_replicas(query_hash, result)
+            return False
+        
+        start_time = time.time()
+        timeout_sec = timeout_ms / 1000.0
+        
+        # Create sets to track replica acknowledgments
+        pending_replicas = set(self.replica_stubs)
+        acknowledged = set()
+        
+        # Send to all replicas
+        for stub in list(self.replica_stubs):
+            try:
+                ack = stub.SetResult(metadata_cache_channel_pb2.CacheSetRequest(query_hash=query_hash, result=result))
+                if ack.success:
+                    with self.lock:
+                        self.replica_status[stub]["offset"] += 1
+                        self.replica_status[stub]["failed_pings"] = 0
+                    acknowledged.add(stub)
+                    pending_replicas.remove(stub)
+            except grpc.RpcError:
+                self.handle_replica_timeout(stub)
+        
+        # Wait for acknowledgments or timeout
+        while time.time() - start_time < timeout_sec and len(acknowledged) < num_replicas:
+            # Try any remaining replicas that haven't acknowledged yet
+            for stub in list(pending_replicas):
+                try:
+                    ack = stub.SetResult(metadata_cache_channel_pb2.CacheSetRequest(query_hash=query_hash, result=result))
+                    if ack.success:
+                        with self.lock:
+                            self.replica_status[stub]["offset"] += 1
+                            self.replica_status[stub]["failed_pings"] = 0
+                        acknowledged.add(stub)
+                        pending_replicas.remove(stub)
+                        if len(acknowledged) >= num_replicas:
+                            break
+                except grpc.RpcError:
+                    self.handle_replica_timeout(stub)
+                    pending_replicas.remove(stub)
+            
+            if len(acknowledged) < num_replicas and pending_replicas:
+                time.sleep(0.05)  # Small sleep to prevent CPU spinning
+        
+        print(f"CacheServer {self.server_id}: Waited for replication, got {len(acknowledged)}/{num_replicas} acks")
+        return len(acknowledged) >= num_replicas
+
+    def _send_and_track_ack(self, stub, query_hash, result, pending_replicas, acknowledged):
+        try:
+            ack = stub.SetResult(metadata_cache_channel_pb2.CacheSetRequest(
+                query_hash=query_hash, result=result))
+            if ack.success:
+                with self.lock:
+                    self.replica_status[stub]["offset"] += 1
+                    self.replica_status[stub]["failed_pings"] = 0
+                    pending_replicas.remove(stub)
+                    acknowledged.add(stub)
+        except grpc.RpcError:
+            self.handle_replica_timeout(stub)
 
     def SetResult(self, request, context):
         query_hash = request.query_hash
         result = request.result
         print(f"CacheServer {self.server_id}: saving hash {query_hash} with value {result}")
+        
         with self.lock:
             self.cache[query_hash] = result
             self.offset += 1
+            
+            # Add to replication backlog (change #6)
+            self.replication_backlog.append((self.offset, query_hash, result))
+            
+            # Trim backlog if needed
+            if len(self.replication_backlog) > self.backlog_max_size:
+                self.replication_backlog.pop(0)
+        
         if self.is_primary:
-            self.send_to_replicas(query_hash, result)
+            if self.ack_policy > 0:
+                # Wait for replication based on ack_policy
+                success = self.wait_for_replicas(query_hash, result, self.ack_policy, self.replication_timeout_ms)
+                return metadata_cache_channel_pb2.CacheSetResponse(success=success)
+            else:
+                # Default async behavior
+                self.send_to_replicas(query_hash, result)
+        
         return metadata_cache_channel_pb2.CacheSetResponse(success=True)
 
     def GetLoad(self, request, context):
@@ -104,22 +187,25 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
     
     def PingWithOffset(self, request, context):
         replica_offset = request.offset
-        print(f"[PING DEBUG] CacheServer {self.server_id}: Replica ping with offset {replica_offset}, primary offset: {self.offset}")
         if replica_offset < self.offset:
-            peer = context.peer()
-            address = peer.split(":")[-1]
-            print(f"[PING DEBUG] Sending snapshot to replica at {address}")
-            try:
-                channel = grpc.insecure_channel(f'localhost:{address}')
-                stub = metadata_cache_channel_pb2_grpc.CacheServiceStub(channel)
-                compressed_data = zlib.compress(str(self.cache).encode())
-                stub.SetSnapshot(metadata_cache_channel_pb2.SnapshotRequest(data=compressed_data))
-                print("[PING DEBUG] Snapshot sent successfully")
-            except grpc.RpcError as e:
-                self.request_snapshot(address)
-                print(f"[PING ERROR] Failed to send snapshot: {e}")
-            return metadata_cache_channel_pb2.PingResponse(up_to_date=False)
-        print(f"[PING DEBUG] Replica is up-to-date")
+            # Calculate what data needs to be sent to catch up the replica
+            # Instead of always sending a full snapshot
+            missing_commands = []
+            for cmd_offset, query_hash, result in self.replication_backlog:
+                if cmd_offset > replica_offset:
+                    missing_commands.append((query_hash, result))
+            
+            # If the replica is too far behind, send full snapshot
+            if not missing_commands or replica_offset < self.offset - len(self.replication_backlog):
+                return self.send_snapshot(context.peer())
+            else:
+                # Catch up replica with just the missing commands
+                for query_hash, result in missing_commands:
+                    try:
+                        self.send_command_to_replica(context.peer(), query_hash, result)
+                    except:
+                        return metadata_cache_channel_pb2.PingResponse(up_to_date=False)
+        
         return metadata_cache_channel_pb2.PingResponse(up_to_date=True)
 
     def request_snapshot(self, primary_port):
@@ -271,7 +357,7 @@ def get_primary_port(cluster_id, sentinel_address="localhost", sentinel_port=500
         print(f"Error querying sentinel for primary: {e}")
     return None
 
-def serve(server_id, port, cluster_id, primary_port=None):
+def serve(server_id, port, cluster_id, primary_port=None, ack_policy=0):
     # Register with the sentinel to determine role
     assigned_as_primary, sentinel_primary_port = register_with_sentinel(server_id, port, cluster_id)
     
@@ -282,7 +368,7 @@ def serve(server_id, port, cluster_id, primary_port=None):
             print(f"CacheServer {server_id}: No primary port provided by Sentinel. Cannot register as replica.")
             return
 
-    cache_server = CacheServer(server_id, is_primary=assigned_as_primary, cluster_id=cluster_id)
+    cache_server = CacheServer(server_id, is_primary=assigned_as_primary, cluster_id=cluster_id, ack_policy=ack_policy)
     
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     metadata_cache_channel_pb2_grpc.add_CacheServiceServicer_to_server(cache_server, server)
@@ -290,20 +376,33 @@ def serve(server_id, port, cluster_id, primary_port=None):
     server.start()
 
     if assigned_as_primary:
-        # No need to register with load balancer - Sentinel has already done this
         threading.Thread(target=cache_server.replica_handler, daemon=True).start()
+        ack_description = {
+            0: "async (no waiting)",
+            1: "wait for 1 replica",
+            2: "wait for 2 replicas",
+            3: "wait for 3 replicas"
+        }
+        print(f"CacheServer {server_id}: Started as PRIMARY with replication policy: {ack_description.get(ack_policy, str(ack_policy))}")
     else:
         print(f"CacheServer {server_id}: Operating as REPLICA. Registering with current primary on port {primary_port}...")
         register_with_primary(server_id, port, primary_port, cache_server)
     
-    print(f"CacheServer {server_id} started on port {port} as {'PRIMARY' if assigned_as_primary else 'REPLICA'}.")
+    print(f"CacheServer {server_id} started on port {port}.")
     server.wait_for_termination()
 
 if __name__ == "__main__":
-    server_id = int(sys.argv[1]) if len(sys.argv) > 1 else 0
-    # Remove the obsolete is_primary flag from the command-line.
-    cluster_id = int(sys.argv[3]) if len(sys.argv) > 3 else 0
-    port = 50051 + server_id
-    primary_port = int(sys.argv[4]) if len(sys.argv) > 4 else None
-    serve(server_id, port, cluster_id, primary_port=primary_port)
+    if len(sys.argv) < 2:
+        print("Usage: python cache_server.py <server_id> [ack_policy]")
+        sys.exit(1)
 
+    server_id = int(sys.argv[1])
+    cluster_id = server_id // 3
+    port = 50051 + server_id
+
+    ack_policy = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+    if ack_policy < 0 or ack_policy > 3 or len(sys.argv) < 3:
+        print(f"Using default (0) for acknowledgement policy.")
+        ack_policy = 0
+
+    serve(server_id, port, cluster_id, ack_policy=ack_policy)
