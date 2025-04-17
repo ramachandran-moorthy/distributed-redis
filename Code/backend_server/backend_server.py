@@ -18,7 +18,8 @@ import heartbeat_pb2_grpc
 
 MYSQL_CONFIG = {
     'pool_name': 'mypool',
-    'pool_size': 10,
+    'pool_reset_session': True,
+    'pool_size': 20,
     'host': 'localhost',
     'user': 'cacheuser',
     'password': 'yourpassword',
@@ -33,7 +34,7 @@ class BackendService(backend_pb2_grpc.BackendServiceServicer):
         try:
             # Create a connection pool with a higher pool size for heavy concurrency.
             self.connection_pool = mysql.connector.pooling.MySQLConnectionPool(**MYSQL_CONFIG)
-            print("Connection pool established with size 10")
+            print("Connection pool established with size 20")
         except Error as err:
             print(f"Error establishing connection pool: {err}")
             self.connection_pool = None
@@ -43,13 +44,17 @@ class BackendService(backend_pb2_grpc.BackendServiceServicer):
             error_msg = "No connection pool available."
             return backend_pb2.BackendResponse(result=json.dumps({"error": error_msg}))
 
-        try:
-            # Get a connection from the pool
-            connection = self.connection_pool.get_connection()
-        except Error as err:
-            error_msg = f"Error obtaining connection from pool: {err}"
-            print(error_msg)
-            return backend_pb2.BackendResponse(result=json.dumps({"error": error_msg}))
+        for attempt in range(3):
+            try:
+                connection = self.connection_pool.get_connection()
+                break
+            except mysql.connector.PoolError:
+                time.sleep(0.1 * 2**attempt)
+        else:
+            # after 3 failed attempts
+            return backend_pb2.BackendResponse(
+                result=json.dumps({"error": "Database connections exhausted"})
+            )
 
         # Parse the SQL query and parameters.
         sql_query = request.sql_query

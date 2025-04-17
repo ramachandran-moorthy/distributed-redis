@@ -72,8 +72,13 @@ class SentinelServiceServicer(sentinel_pb2_grpc.SentinelServiceServicer):
 
         with self.lock:
             if cluster_id not in self.clusters:
-                self.clusters[cluster_id] = {'primary': None, 'replicas': []}
+                self.clusters[cluster_id] = {'primary': None, 'replicas': [], 'all_servers': []}
             cluster = self.clusters[cluster_id]
+            
+            # Add to all_servers list if not already there
+            server_info = (server_id, port)
+            if server_info not in cluster['all_servers']:
+                cluster['all_servers'].append(server_info)
             
             # Initialize health tracking for this server
             self.server_health[port] = {'failed_checks': 0, 'last_check': time.time()}
@@ -102,6 +107,30 @@ class SentinelServiceServicer(sentinel_pb2_grpc.SentinelServiceServicer):
             primary_port = cluster['primary'][1] if cluster['primary'] else 0
         
         return sentinel_pb2.CacheServerRegistrationResponse(success=True, is_primary=is_primary, primary_port=primary_port)
+
+    def GetClusterReplicas(self, request, context):
+        """RPC to get all replicas for a cluster (excluding the requesting server)"""
+        cluster_id = request.cluster_id
+        requester_id = request.server_id
+        replicas = []
+        
+        with self.lock:
+            if cluster_id in self.clusters:
+                cluster = self.clusters[cluster_id]
+                # Convert all servers except the requester and current primary to replicas
+                primary_id = cluster['primary'][0] if cluster['primary'] else None
+                
+                for server_id, port in cluster['all_servers']:
+                    # Skip the requesting server and current primary
+                    if server_id != requester_id and server_id != primary_id:
+                        # Only include healthy servers
+                        if port not in self.server_health or self.server_health[port]['failed_checks'] < self.HEALTH_THRESHOLD:
+                            replicas.append({'server_id': server_id, 'port': port})
+        
+        return sentinel_pb2.GetClusterReplicasResponse(
+            success=True,
+            replicas=[sentinel_pb2.ReplicaInfo(server_id=r['server_id'], port=r['port']) for r in replicas]
+        )
 
     def _check_server_health(self, port):
         """
@@ -190,6 +219,7 @@ def run_sentinel_monitor(servicer):
                                 channel = grpc.insecure_channel(f"localhost:{new_primary[1]}")
                                 stub = metadata_cache_channel_pb2_grpc.CacheServiceStub(channel)
                                 stub.PromoteToPrimary(metadata_cache_channel_pb2.EmptyRequest())
+                                print("Sentinel Monitor: Notified new primary about promotion!")
                             except Exception as e:
                                 print(f"Sentinel Monitor: Failed to notify new primary about promotion: {e}")
                         else:
