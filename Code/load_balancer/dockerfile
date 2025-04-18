@@ -1,0 +1,76 @@
+# Use an official Python base image
+FROM python:3.10-slim
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install dependencies
+COPY requirements.txt .
+
+RUN pip install --upgrade pip && \
+    pip install -r requirements.txt
+
+# Copy load balancer code
+COPY . .
+
+# # Copy grpc folder from one level up using relative path
+COPY ./Code/grpc /app/grpc
+COPY . ./grpc/
+
+# Set PYTHONPATH so the script can find the grpc folder
+ENV PYTHONPATH="${PYTHONPATH}:/app/grpc:/app/load_balancer"
+
+# Compile proto files
+RUN python -m grpc_tools.protoc -I=./grpc --python_out=. --grpc_python_out=. metadata_cache_channel.proto
+RUN python -m grpc_tools.protoc -I=./grpc --python_out=. --grpc_python_out=. load_balancer.proto
+
+# Expose port used by load balancer
+EXPOSE 50053
+
+# Run the load balancer
+CMD ["python", "load_balancer/load_balancer.py"]
+
+# # Use an official Python base image
+# FROM python:3.10-slim
+
+# # Set environment variables
+# ENV PYTHONDONTWRITEBYTECODE=1
+# ENV PYTHONUNBUFFERED=1
+
+# # Set working directory
+# WORKDIR /app
+
+# # Install system dependencies
+# RUN apt-get update && apt-get install -y --no-install-recommends \
+#     build-essential \
+#     && rm -rf /var/lib/apt/lists/*
+
+# # Copy and install dependencies
+# COPY requirements.txt .
+# RUN pip install --upgrade pip && \
+#     pip install -r requirements.txt
+
+# # Copy all source code in this context (load_balancer + grpc)
+# COPY . .
+
+# # Set PYTHONPATH so the script can find grpc modules
+# ENV PYTHONPATH="${PYTHONPATH}:/app/grpc:/app/load_balancer"
+
+# # Compile proto files (use relative paths since we're in /app now)
+# RUN python -m grpc_tools.protoc -I=grpc --python_out=grpc --grpc_python_out=grpc grpc/metadata_cache_channel.proto
+# RUN python -m grpc_tools.protoc -I=grpc --python_out=grpc --grpc_python_out=grpc grpc/load_balancer.proto
+
+# # Expose the service port
+# EXPOSE 50053
+
+# # Run the load balancer
+# CMD ["python", "load_balancer.py"]

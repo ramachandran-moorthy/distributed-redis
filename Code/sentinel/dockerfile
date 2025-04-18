@@ -1,0 +1,30 @@
+# Use an official Python image as a base
+FROM python:3.10-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libffi-dev \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+COPY ./Code/sentinel/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy all files from the sentinel folder to the container
+COPY ./Code/sentinel/ /app
+COPY ./Code/grpc/ ./grpc/
+
+# Compile the .proto files into Python gRPC code during build
+RUN python -m grpc_tools.protoc -I=./grpc --python_out=. --grpc_python_out=. sentinel.proto
+RUN python -m grpc_tools.protoc -I=./grpc --python_out=. --grpc_python_out=. metadata_cache_channel.proto
+
+# Expose the port the Sentinel service will use
+EXPOSE 50060
+
+# Run the Sentinel service
+CMD ["python", "sentinel/sentinel.py"]

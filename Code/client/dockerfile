@@ -1,0 +1,25 @@
+FROM python:3.9-slim
+
+# Set the working directory inside the container
+WORKDIR /app
+
+# Copy the application code into the container
+COPY ./Code/client/ /app
+COPY ./Code/grpc/ ./grpc/
+
+# Install necessary dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Set environment variables (you can adjust as needed)
+ENV CONSUL_HOST=consul
+ENV CONSUL_PORT=8500
+ENV GATEWAY_SERVER=127.0.0.1
+ENV GATEWAY_PORT=50051
+
+RUN python -m grpc_tools.protoc -I=./grpc --python_out=. --grpc_python_out=. gateway.proto
+
+# Expose necessary ports for gRPC communication
+EXPOSE 50051
+
+# Command to run the client
+CMD ["python", "client/client.py"]

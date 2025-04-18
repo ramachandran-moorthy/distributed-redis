@@ -1,0 +1,21 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install dependencies
+COPY ./Code/backend_server/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy backend code
+COPY ./Code/backend_server/ ./backend_server/
+COPY ./Code/grpc/ ./grpc/
+
+# Compile proto files
+RUN python -m grpc_tools.protoc -I=./grpc --python_out=. --grpc_python_out=. backend.proto
+RUN python -m grpc_tools.protoc -I=./grpc --python_out=. --grpc_python_out=. heartbeat.proto
+
+# Set the environment to ensure UTF-8 logs
+ENV PYTHONUNBUFFERED=1
+
+# Run the backend server
+CMD ["python", "backend_server/backend_server.py"]

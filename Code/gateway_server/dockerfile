@@ -1,0 +1,35 @@
+# Base image
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install
+COPY ./Code/gateway_server/requirements.txt .
+
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy gateway server code
+COPY ./Code/gateway_server/ ./gateway_server/
+COPY ./Code/grpc/ ./grpc/
+
+RUN python -m grpc_tools.protoc -I=./grpc --python_out=. --grpc_python_out=. load_balancer.proto
+RUN python -m grpc_tools.protoc -I=./grpc --python_out=. --grpc_python_out=. backend.proto
+RUN python -m grpc_tools.protoc -I=./grpc --python_out=. --grpc_python_out=. heartbeat.proto
+RUN python -m grpc_tools.protoc -I=./grpc --python_out=. --grpc_python_out=. gateway.proto
+
+
+# Set environment variables for Prometheus (optional)
+ENV PROMETHEUS_MULTIPROC_DIR=/tmp
+
+# Expose necessary ports
+EXPOSE 50051 8000
+
+# Start Prometheus metrics server (8000) and then gateway server
+CMD ["sh", "-c", "python3 -m prometheus_client --port=8000 & python3 gateway_server/gateway_server.py"]

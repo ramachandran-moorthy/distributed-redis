@@ -1,0 +1,170 @@
+version: '3.8'
+
+services:
+  #mysql
+  mysql:
+    image: mysql:8.0
+    container_name: mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: university
+      MYSQL_USER: testuser
+      MYSQL_PASSWORD: Vanshika@251102
+    volumes:
+      - ./database_backup.sql:/docker-entrypoint-initdb.d/Dummy_data.sql
+    ports:
+      - "3306:3306"
+    networks:
+      - gateway-net
+
+
+
+  # Consul Service
+  consul:
+    image: consul:1.15
+    ports:
+      - "8500:8500"
+    command: "agent -dev -client=0.0.0.0"
+    networks:
+      - gateway-net
+
+  # Prometheus Service
+  prometheus:
+    image: prom/prometheus:v2.51.1
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - gateway-net
+
+  # Gateway Service
+  gateway:
+    build:
+      context: ./Code/gateway_server
+      dockerfile: dockerfile
+    container_name: gateway-server
+    ports:
+      - "50051:50051"
+      - "8000:8000"  # Prometheus metrics
+    depends_on:
+      - consul
+      - load_balancer
+      - backend
+    networks:
+      - gateway-net
+      - redis-net
+    environment:
+      - PROMETHEUS_PORT=8000
+      - GATEWAY_PORT=50051
+      - CONSUL_HOST=consul
+      - LOAD_BALANCER_HOST=load_balancer
+      - BACKEND_HOST=backend
+
+  # Load Balancer Service
+  load_balancer:
+    build:
+      context: ./Code/load_balancer
+      dockerfile: dockerfile
+    container_name: load-balancer
+    ports:
+      - "50053:50053"
+    networks:
+      - redis-net
+
+  # Backend Service
+  backend:
+    build:
+      context: ./Code/backend_server
+      dockerfile: dockerfile
+    ports:
+      - "50055:50055"
+    depends_on:
+      - mysql
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_USER: testuser
+      MYSQL_PASSWORD: Vanshika@251102
+      MYSQL_DATABASE: university
+    networks:
+      - gateway-net
+
+  # Cache Server Cluster 0
+  cache-primary-0:
+    build:
+      context: ./Code/cache_server
+      dockerfile: dockerfile
+    container_name: cache_primary_0
+    command: ["0", "1", "cluster0", "--ack_policy", "strong"]
+    ports:
+      - "5100:5000"
+    depends_on:
+      - load_balancer
+    networks:
+      - redis-net
+
+  cache-replica-1:
+    build:
+      context: ./Code/cache_server
+      dockerfile: dockerfile
+    container_name: cache_replica_1
+    command: ["1", "0", "cluster0", "5100"]
+    ports:
+      - "5101:5000"
+    depends_on:
+      - cache-primary-0
+    networks:
+      - redis-net
+
+  cache-replica-2:
+    build:
+      context: ./Code/cache_server
+      dockerfile: dockerfile
+    container_name: cache_replica_2
+    command: ["2", "0", "cluster0", "5100"]
+    ports:
+      - "5102:5000"
+    depends_on:
+      - cache-primary-0
+    networks:
+      - redis-net
+
+  # Client Service (new)
+  client:
+    build:
+      context: ./Code/client
+      dockerfile: dockerfile
+    container_name: client
+    depends_on:
+      - consul
+      - gateway
+    networks:
+      - gateway-net
+    environment:
+      - CONSUL_HOST=consul
+      - CONSUL_PORT=8500
+      - GATEWAY_SERVER=127.0.0.1
+      - GATEWAY_PORT=50051
+  #sentinel
+  sentinel:
+    build:
+      context: ./Code/sentinel
+      dockerfile: dockerfile
+    container_name: sentinel
+    ports:
+      - "50060:50060"
+    networks:
+      - redis-net
+    environment:
+      - SENTINEL_PORT=50060
+      - CONSUL_HOST=consul
+    depends_on:
+      - consul
+
+networks:
+  gateway-net:
+    driver: bridge
+  redis-net:
+    driver: bridge
+
+

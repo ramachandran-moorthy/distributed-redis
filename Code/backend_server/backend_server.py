@@ -8,6 +8,7 @@ import grpc
 from concurrent import futures
 import time
 import json
+import os
 import threading
 from mysql.connector import Error, pooling
 import mysql.connector
@@ -20,7 +21,7 @@ MYSQL_CONFIG = {
     'pool_name': 'mypool',
     'pool_reset_session': True,
     'pool_size': 20,
-    'host': 'localhost',
+    'host': 'mysql',
     'user': 'testuser',
     'password': 'Vanshika@251102',
     'database': 'university'

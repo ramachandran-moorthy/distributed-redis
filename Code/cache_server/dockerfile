@@ -1,0 +1,20 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Install dependencies
+COPY ./Code/cache_server/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy source files
+COPY ./Code/cache_server/cache_server.py .
+COPY ./Code/grpc/ grpc/
+
+RUN python -m grpc_tools.protoc -I=./grpc --python_out=. --grpc_python_out=. sentinel.proto
+RUN python -m grpc_tools.protoc -I=./grpc --python_out=. --grpc_python_out=. metadata_cache_channel.proto
+
+# Expose default port (can override in compose)
+EXPOSE 5000
+
+# Entrypoint allows passing args to the script
+ENTRYPOINT ["python", "cache_server/cache_server.py"]

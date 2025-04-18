@@ -1,0 +1,5 @@
+grpcio==1.62.0
+grpcio-tools==1.62.0
+protobuf==4.25.3
+prometheus-client==0.20.0
+python-consul==1.1.0
