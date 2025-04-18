@@ -5,7 +5,7 @@ import warnings
 
 import metadata_cache_channel_pb2 as metadata__cache__channel__pb2
 
-GRPC_GENERATED_VERSION = '1.70.0'
+GRPC_GENERATED_VERSION = '1.71.0'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 

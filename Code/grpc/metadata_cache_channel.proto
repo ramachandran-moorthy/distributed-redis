@@ -107,6 +107,3 @@ message SnapshotResponse {
   bool success = 1;
   bytes data = 2;  // <-- add this line
 }
-
-
-
