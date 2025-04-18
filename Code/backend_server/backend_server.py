@@ -21,8 +21,8 @@ MYSQL_CONFIG = {
     'pool_reset_session': True,
     'pool_size': 20,
     'host': 'localhost',
-    'user': 'cacheuser',
-    'password': 'yourpassword',
+    'user': 'testuser',
+    'password': 'Vanshika@251102',
     'database': 'university'
 }
 

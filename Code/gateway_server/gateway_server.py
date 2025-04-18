@@ -8,6 +8,8 @@ import time
 import consul
 import threading
 from datetime import datetime
+from prometheus_client import start_http_server, Counter, Histogram
+
 
 sys.path.append(path.abspath(path.join(path.dirname(__file__), '../grpc')))
 
@@ -15,6 +17,11 @@ import gateway_pb2, gateway_pb2_grpc
 import load_balancer_pb2, load_balancer_pb2_grpc
 import backend_pb2, backend_pb2_grpc
 import heartbeat_pb2, heartbeat_pb2_grpc
+
+REQUEST_COUNT = Counter("gateway_requests_total", "Total number of requests")
+CACHE_HIT_COUNT = Counter("gateway_cache_hit_total", "Total number of cache hits")
+CACHE_MISS_COUNT = Counter("gateway_cache_miss_total", "Total number of cache misses")
+REQUEST_LATENCY = Histogram("gateway_request_latency_seconds", "Latency of gateway requests in seconds")
 
 # Global variable to track backend health status
 backend_health = {
@@ -211,84 +218,89 @@ def build_sql_from_query(query_data):
 
 class GatewayService(gateway_pb2_grpc.GatewayServiceServicer):
     def ProcessQuery(self, request, context):
-        try:
-            query_data = json.loads(request.json_query)
-        except Exception as e:
-            err = {"error": "Invalid JSON", "details": str(e)}
-            return gateway_pb2.GatewayResponse(response=json.dumps(err))
-        
-        # Check backend health status before proceeding
-        global backend_health
-        with health_lock:
-            is_backend_healthy = backend_health["is_healthy"]
-        
-        # Build a cache key using the entity, operation, and data.
-        cache_key = create_consistent_cache_key(query_data.get('entity'), query_data.get('operation'), query_data.get("data", {}))
-        print(f"Gateway: Using cache key {cache_key}")
-
-        # Attempt to discover load balancer if address isn't set
-        global load_balancer_address
-        if load_balancer_address is None:
-            discover_load_balancer()
-
-        # Check cache via load balancer
-        try:
-            with grpc.insecure_channel(load_balancer_address) as cache_channel:
-                cache_stub = load_balancer_pb2_grpc.CacheServiceStub(cache_channel)
-                cache_resp = cache_stub.GetCachedData(load_balancer_pb2.CacheRequest(key=cache_key))
-        except grpc.RpcError as e:
-            print(f"Gateway: Cache service error: {e}")
-            if not is_backend_healthy:
-                return gateway_pb2.GatewayResponse(response=json.dumps({
-                    "error": "Service unavailable",
-                    "details": "Cache service is down and backend server is unhealthy"
-                }))
-            # Continue to backend if cache is down but backend is healthy
-            cache_resp = type('obj', (object,), {'found': False})
-        
-        if cache_resp.found:
-            print("Gateway: Cache hit.")
-            return gateway_pb2.GatewayResponse(response=cache_resp.value)
-        else:
-            print("Gateway: Cache miss. Building SQL query.")
-            
-            # If cache miss and backend is down, return error
-            if not is_backend_healthy:
-                return gateway_pb2.GatewayResponse(response=json.dumps({
-                    "error": "Service unavailable", 
-                    "details": "Backend server is down and data is not in cache"
-                }))
-                
+        REQUEST_COUNT.inc()
+        start_time = time.time()
+        with REQUEST_LATENCY.time():
             try:
-                sql_query, params = build_sql_from_query(query_data)
-            except ValueError as ve:
-                return gateway_pb2.GatewayResponse(response=json.dumps({"error": str(ve)}))
+                query_data = json.loads(request.json_query)
+            except Exception as e:
+                err = {"error": "Invalid JSON", "details": str(e)}
+                return gateway_pb2.GatewayResponse(response=json.dumps(err))
             
-            # Call backend server via gRPC.
-            try:
-                with grpc.insecure_channel("localhost:50055") as backend_channel:
-                    backend_stub = backend_pb2_grpc.BackendServiceStub(backend_channel)
-                    backend_resp = backend_stub.ExecuteSQL(
-                        backend_pb2.BackendRequest(sql_query=sql_query, params=json.dumps({"params": params}))
-                    )
-            except grpc.RpcError as e:
-                # Mark backend as unhealthy if request fails
-                with health_lock:
-                    backend_health["is_healthy"] = False
-                return gateway_pb2.GatewayResponse(response=json.dumps({
-                    "error": "Backend service error", 
-                    "details": str(e)
-                }))
+            # Check backend health status before proceeding
+            global backend_health
+            with health_lock:
+                is_backend_healthy = backend_health["is_healthy"]
             
-            # Try to cache the result, but don't fail if cache is down
+            # Build a cache key using the entity, operation, and data.
+            cache_key = create_consistent_cache_key(query_data.get('entity'), query_data.get('operation'), query_data.get("data", {}))
+            print(f"Gateway: Using cache key {cache_key}")
+
+            # Attempt to discover load balancer if address isn't set
+            global load_balancer_address
+            if load_balancer_address is None:
+                discover_load_balancer()
+
+            # Check cache via load balancer
             try:
                 with grpc.insecure_channel(load_balancer_address) as cache_channel:
                     cache_stub = load_balancer_pb2_grpc.CacheServiceStub(cache_channel)
-                    _ = cache_stub.SetCachedData(load_balancer_pb2.CacheSetRequest(key=cache_key, value=backend_resp.result))
+                    cache_resp = cache_stub.GetCachedData(load_balancer_pb2.CacheRequest(key=cache_key))
             except grpc.RpcError as e:
-                print(f"Gateway: Warning: Failed to cache result: {e}")
+                print(f"Gateway: Cache service error: {e}")
+                if not is_backend_healthy:
+                    return gateway_pb2.GatewayResponse(response=json.dumps({
+                        "error": "Service unavailable",
+                        "details": "Cache service is down and backend server is unhealthy"
+                    }))
+                # Continue to backend if cache is down but backend is healthy
+                cache_resp = type('obj', (object,), {'found': False})
             
-            return gateway_pb2.GatewayResponse(response=backend_resp.result)
+            if cache_resp.found:
+                CACHE_HIT_COUNT.inc()
+                print("Gateway: Cache hit.")
+                return gateway_pb2.GatewayResponse(response=cache_resp.value)
+            else:
+                CACHE_MISS_COUNT.inc()
+                print("Gateway: Cache miss. Building SQL query.")
+                
+                # If cache miss and backend is down, return error
+                if not is_backend_healthy:
+                    return gateway_pb2.GatewayResponse(response=json.dumps({
+                        "error": "Service unavailable", 
+                        "details": "Backend server is down and data is not in cache"
+                    }))
+                    
+                try:
+                    sql_query, params = build_sql_from_query(query_data)
+                except ValueError as ve:
+                    return gateway_pb2.GatewayResponse(response=json.dumps({"error": str(ve)}))
+                
+                # Call backend server via gRPC.
+                try:
+                    with grpc.insecure_channel("localhost:50055") as backend_channel:
+                        backend_stub = backend_pb2_grpc.BackendServiceStub(backend_channel)
+                        backend_resp = backend_stub.ExecuteSQL(
+                            backend_pb2.BackendRequest(sql_query=sql_query, params=json.dumps({"params": params}))
+                        )
+                except grpc.RpcError as e:
+                    # Mark backend as unhealthy if request fails
+                    with health_lock:
+                        backend_health["is_healthy"] = False
+                    return gateway_pb2.GatewayResponse(response=json.dumps({
+                        "error": "Backend service error", 
+                        "details": str(e)
+                    }))
+                
+                # Try to cache the result, but don't fail if cache is down
+                try:
+                    with grpc.insecure_channel(load_balancer_address) as cache_channel:
+                        cache_stub = load_balancer_pb2_grpc.CacheServiceStub(cache_channel)
+                        _ = cache_stub.SetCachedData(load_balancer_pb2.CacheSetRequest(key=cache_key, value=backend_resp.result))
+                except grpc.RpcError as e:
+                    print(f"Gateway: Warning: Failed to cache result: {e}")
+                
+                return gateway_pb2.GatewayResponse(response=backend_resp.result)
         
 def check_backend_health():
     """Thread to check backend health by sending requests every 0.5 seconds"""
@@ -363,7 +375,9 @@ def serve():
     # Start health check thread
     health_thread = threading.Thread(target=check_backend_health, daemon=True)
     health_thread.start()
-    
+    start_http_server(8000)  # Prometheus will scrape metrics from http://localhost:8000/metrics
+    print("Prometheus metrics server started on port 8000")
+
     server.start()
     print(f"Gateway server started on port {port}")
     try:
@@ -374,3 +388,6 @@ def serve():
 
 if __name__ == "__main__":
     serve()
+
+
+
