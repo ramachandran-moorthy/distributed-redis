@@ -58,10 +58,6 @@ def build_sql_from_query(query_data):
     entity = query_data.get("entity")
     operation = query_data.get("operation")
     data = query_data.get("data", {})
-    
-    # Additional query options
-    filters = query_data.get("filters", {})
-    order_by = query_data.get("order_by", None)
     select_fields = query_data.get("select", "*")
     
     if operation == "create":
@@ -76,120 +72,47 @@ def build_sql_from_query(query_data):
         return sql, params
         
     elif operation == "read":
-        # Support for selecting specific fields
-        if isinstance(select_fields, list):
-            fields_str = ", ".join(select_fields)
+        if data:
+            conditions = []
+            params = []
+            for key, value in data.items():
+                conditions.append(f"{key} = %s")
+                params.append(value)
+                
+            where_clause = " AND ".join(conditions)
+            sql = f"SELECT {select_fields} FROM {entity} WHERE {where_clause}"
         else:
-            fields_str = select_fields
+            # If no filters provided, return all records
+            sql = f"SELECT {select_fields} FROM {entity}"
+            params = []
             
-        sql = f"SELECT {fields_str} FROM {entity}"
-        params = []
-        
-        # Build WHERE clause from both data and filters
-        where_conditions = []
-        
-        # Process basic equality conditions from data
-        for k, v in data.items():
-            where_conditions.append(f"{k} = %s")
-            params.append(v)
-        
-        # Process advanced filters
-        if filters:
-            for field, conditions in filters.items():
-                if isinstance(conditions, dict):
-                    for op, value in conditions.items():
-                        operator_map = {
-                            "eq": "=",
-                            "neq": "!=",
-                            "gt": ">",
-                            "gte": ">=",
-                            "lt": "<",
-                            "lte": "<=",
-                            "in": "IN",
-                            "not_in": "NOT IN",
-                            "like": "LIKE",
-                            "ilike": "ILIKE",  # Case insensitive LIKE (PostgreSQL)
-                            "contains": "LIKE",
-                            "starts_with": "LIKE",
-                            "ends_with": "LIKE",
-                            "is_null": "IS NULL",
-                            "is_not_null": "IS NOT NULL"
-                        }
-                        
-                        sql_op = operator_map.get(op)
-                        if not sql_op:
-                            raise ValueError(f"Unsupported filter operator: {op}")
-                            
-                        # Special handling for various operators
-                        if op == "in" or op == "not_in":
-                            placeholders = ", ".join(["%s"] * len(value))
-                            where_conditions.append(f"{field} {sql_op} ({placeholders})")
-                            params.extend(value)
-                        elif op == "contains":
-                            where_conditions.append(f"{field} {sql_op} %s")
-                            params.append(f"%{value}%")
-                        elif op == "starts_with":
-                            where_conditions.append(f"{field} {sql_op} %s")
-                            params.append(f"{value}%")
-                        elif op == "ends_with":
-                            where_conditions.append(f"{field} {sql_op} %s")
-                            params.append(f"%{value}")
-                        elif op == "is_null" or op == "is_not_null":
-                            where_conditions.append(f"{field} {sql_op}")  # No parameter needed
-                        else:
-                            where_conditions.append(f"{field} {sql_op} %s")
-                            params.append(value)
-                else:
-                    # Simple equality
-                    where_conditions.append(f"{field} = %s")
-                    params.append(conditions)
-        
-        # Add WHERE clause if we have conditions
-        if where_conditions:
-            sql += f" WHERE {' AND '.join(where_conditions)}"
-        
-        # Add ORDER BY if specified
-        if order_by:
-            if isinstance(order_by, list):
-                # Handle multiple order by fields
-                order_clauses = []
-                for field in order_by:
-                    if isinstance(field, dict):
-                        # Format: {"field": "name", "direction": "DESC"}
-                        field_name = field.get("field")
-                        direction = field.get("direction", "ASC").upper()
-                        order_clauses.append(f"{field_name} {direction}")
-                    else:
-                        # Simple field name assumes ASC
-                        order_clauses.append(f"{field} ASC")
-                sql += f" ORDER BY {', '.join(order_clauses)}"
-            else:
-                # Simple string
-                sql += f" ORDER BY {order_by}"
-        
         return sql, tuple(params)
         
     elif operation == "update":
-        if "id" in data:
-            identifier = data.pop("id")
-        elif query_data.get("where"):
-            # Allow custom WHERE conditions for updates
-            where_clause = query_data.get("where")
-            where_params = query_data.get("where_params", [])
-            
-            if not data:
-                raise ValueError("Update operation requires data to update")
-                
-            set_clause = ", ".join([f"{k} = %s" for k in data])
-            sql = f"UPDATE {entity} SET {set_clause} WHERE {where_clause}"
-            params = tuple(data.values()) + tuple(where_params)
-            return sql, params
-        else:
-            raise ValueError("Update operation requires either an 'id' field or a 'where' clause")
+        if not data:
+            raise ValueError("Update operation requires data with at least one filter field and one update field")
         
-        set_clause = ", ".join([f"{k} = %s" for k in data])
-        sql = f"UPDATE {entity} SET {set_clause} WHERE id = %s"
-        params = tuple(data.values()) + (identifier,)
+        # Extract the first field as the filter
+        try:
+            filter_key, filter_value = next(iter(data.items()))
+        except StopIteration:
+            raise ValueError("Update operation requires at least one field in data")
+        
+        # Create a copy of data and remove the filter field to get update fields
+        update_data = data.copy()
+        update_data.pop(filter_key)
+        
+        # Ensure we have fields to update
+        if not update_data:
+            raise ValueError("Update operation requires at least one field to update")
+        
+        # Build the SQL query
+        set_clause = ", ".join([f"{k} = %s" for k in update_data])
+        where_clause = f"{filter_key} = %s"
+        
+        sql = f"UPDATE {entity} SET {set_clause} WHERE {where_clause}"
+        params = tuple(update_data.values()) + (filter_value,)
+        
         return sql, params
         
     elif operation == "delete":

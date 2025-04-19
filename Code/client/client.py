@@ -32,25 +32,28 @@ def discover_gateway_server(consul_host="127.0.0.1", consul_port=8500):
         print(f"Error connecting to Consul: {e}")
         return {"error": f"Error connecting to Consul: {e}"}
 
-def build_query(entity, operation, **kwargs):
+def build_query(entity, operation, data):
     return json.dumps({
         "entity": entity,
         "operation": operation,
-        "data": kwargs
+        "data": data
     })
 
-def run(entity, operation, **kwargs):
+def run(entity, operation, data=None):
     address, port = discover_gateway_server()
     if not address:
         print("Gateway server not found in Consul.")
         return
+    
+    if data is None:
+        data = {}
     
     try:
         target = f"{address}:{port}"
         with grpc.insecure_channel(target) as channel:
             stub = gateway_pb2_grpc.GatewayServiceStub(channel)
             
-            json_query = build_query(entity, operation, **kwargs)
+            json_query = build_query(entity, operation, data)
             print(f"Sending query: {json_query}")
             
             request = gateway_pb2.GatewayRequest(json_query=json_query)
@@ -75,51 +78,20 @@ def run(entity, operation, **kwargs):
         return {"error": f"Unexpected error: {str(e)}"}
 
 def print_usage():
-    print("""
-    Client Usage Guide:
-    ------------------
-    This client interfaces with the distributed database system through the gateway server.
-    
-    Basic Operations:
-    ----------------
-    1. Create a record:
-       python client.py create <entity> '{"field1": "value1", "field2": "value2", ...}'
-       
-    2. Read records:
-       python client.py read <entity> '{"field1": "value1"}'
-       python client.py read <entity> '{"data": {"status": "active"}, "filters": {"age": {"gt": 21}}}'
-       python client.py read <entity> '{"select": ["id", "name", "email"]}'
-       python client.py read <entity> '{"order_by": [{"field": "last_name", "direction": "DESC"}]}'
-
-       
-    3. Update a record:
-       python client.py update <entity> '{"id": 1, "field1": "new_value"}'
-       python client.py update <entity> '{"data": {"status": "inactive"}, "where": "last_login < %s", "where_params": ["2023-01-01"]}'
-       
-    4. Delete a record:
-       python client.py delete <entity> '{"id": 1}'
-        
-    Filter Operators:
-    ---------------
-    - "eq": Equal to (=)
-    - "neq": Not equal to (!=)
-    - "gt": Greater than (>)
-    - "gte": Greater than or equal to (>=)
-    - "lt": Less than (<)
-    - "lte": Less than or equal to (<=)
-    - "in": In a list of values (IN)
-    - "not_in": Not in a list of values (NOT IN)
-    - "like": Pattern matching with wildcards (LIKE)
-    - "ilike": Case-insensitive pattern matching
-    - "contains": Contains substring (LIKE %value%)
-    - "starts_with": Starts with (LIKE value%)
-    - "ends_with": Ends with (LIKE %value)
-    - "is_null": Is NULL
-    - "is_not_null": Is NOT NULL
-    
-    Example filter usage:
-    python client.py read users '{"filters": {"name": {"like": "%John%"}, "age": {"gt": 25, "lt": 65}}}'
-    """)
+    """Print usage information for the client"""
+    print("Database Client Usage:")
+    print("\npython client.py <entity> <operation> [data]")
+    print("\nOperations:")
+    print("  create - Create a new record")
+    print("    Example: python client.py student create '{\"first_name\": \"John\", \"last_name\": \"Doe\", \"program\": \"Computer Science\"}'")
+    print("\n  read - Read records (with optional filters)")
+    print("    Example: python client.py student read '{\"program\": \"Chemistry\", \"last_name\": \"Chong\"}'")
+    print("    Example: python client.py student read  # Returns all records")
+    print("\n  update - Update records (first field is the filter)")
+    print("    Example: python client.py student update '{\"id\": 5, \"last_name\": \"Smith\", \"program\": \"Physics\"}'")
+    print("    Note: The first field (id in this example) is used as the filter, all other fields will be updated")
+    print("\n  delete - Delete records")
+    print("    Example: python client.py student delete '{\"id\": 5}'")
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
@@ -130,20 +102,13 @@ if __name__ == "__main__":
     operation = sys.argv[2]
     data = {}
     
-    # Parse key=value arguments
-    for arg in sys.argv[3:]:
-        if "=" in arg:
-            key, value = arg.split("=", 1)
-            # Try to convert to appropriate type
-            if value.isdigit():
-                value = int(value)
-            elif value.lower() == "true":
-                value = True
-            elif value.lower() == "false":
-                value = False
-            # Remove quotes if present
-            elif value.startswith('"') and value.endswith('"'):
-                value = value[1:-1]
-            data[key] = value
+    # Try to parse data as JSON if provided
+    if len(sys.argv) >= 4:
+        try:
+            data = json.loads(sys.argv[3])
+        except json.JSONDecodeError:
+            print("Error: Unable to parse data as JSON. Make sure it's properly formatted.")
+            print("Example: '{\"id\": 5, \"name\": \"John\"}'")
+            sys.exit(1)
     
-    run(entity, operation, **data)
+    run(entity, operation, data)
