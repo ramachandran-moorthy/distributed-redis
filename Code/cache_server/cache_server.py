@@ -9,6 +9,9 @@ import uuid
 import zlib
 import threading
 
+import collections
+from collections import OrderedDict
+
 # Add the grpc folder to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../grpc')))
 
@@ -25,7 +28,7 @@ MAX_RETRY = 2
 class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
     def __init__(self, server_id, is_primary=False, cluster_id=None, ack_policy=0):
         self.server_id = server_id
-        self.cache = {}  # hash -> result
+        self.cache = OrderedDict()
         self.entity_index = {}  # (entity_type, entity_id) -> set of query_hash
         self.is_primary = is_primary
         self.lock = threading.Lock()
@@ -35,10 +38,11 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
         self.replication_id = str(uuid.uuid4())
         self.offset = 0
         self.replication_backlog = []  # List of (offset, query_hash, result) tuples
-        self.backlog_max_size = 100
+        self.backlog_max_size = 10
         self.ack_policy = ack_policy  # 0: no wait, 1-N: wait for N acks
         self.replication_timeout_ms = 1000
         self.server_port = None
+        self.max_entries = 20
 
         self.health_lock = threading.Lock()
         self.health_check_running = True
@@ -65,11 +69,20 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
 
     def GetResult(self, request, context):
         query_hash = request.query_hash
+        
         with self.lock:
-            result = self.cache.get(query_hash, "")
-            found = query_hash in self.cache
-        print(f"CacheServer {self.server_id}: GetResult for hash {query_hash}, found: {found}")
-        return metadata_cache_channel_pb2.CacheResponse(result=result, found=found)
+            if query_hash in self.cache:
+                # LRU behavior: Move accessed item to the end (most recently used position)
+                result = self.cache[query_hash]
+                # Remove and reinsert to move to the end
+                self.cache.move_to_end(query_hash)
+                found = True
+                print(f"CacheServer {self.server_id}: GetResult for hash {query_hash}, found: {found}")
+            else:
+                result = ""
+                found = False
+                
+            return metadata_cache_channel_pb2.CacheResponse(result=result, found=found)
     
     def wait_for_replicas(self, query_hash, result, num_replicas, timeout_ms, entity="", operation="read"):
         """Wait for at least num_replicas to acknowledge receiving the data"""
@@ -168,39 +181,50 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
         query_hash = request.query_hash
         result = request.result
         entity = request.entity
-        operation = request.operation if hasattr(request, 'operation') else "read"  # Default to read
+        operation = request.operation if hasattr(request, 'operation') else "read"
         
         print(f"CacheServer {self.server_id}: Processing {operation} operation for entity {entity}")
         
         with self.lock:
             # For write operations, invalidate the cache for this entity
             if operation in ["create", "update", "delete"]:
+                # Existing invalidation code remains the same...
                 print(f"CacheServer {self.server_id}: Invalidating cache for entity {entity} due to {operation} operation")
-                
                 # Collect the keys to invalidate
                 keys_to_invalidate = []
                 if entity in self.entity_index:
                     keys_to_invalidate = list(self.entity_index[entity])
                     
-                    # Remove these keys from the cache
-                    for query_hash in keys_to_invalidate:
-                        if query_hash in self.cache:
-                            del self.cache[query_hash]
-                    
-                    # Clear the entity index for this entity
-                    self.entity_index[entity] = set()
-                    
+                # Remove these keys from the cache
+                for query_hash in keys_to_invalidate:
+                    if query_hash in self.cache:
+                        del self.cache[query_hash]
+                        
+                # Clear the entity index for this entity
+                self.entity_index[entity] = set()
+                
                 # Propagate invalidation to replicas if this is a primary
                 if self.is_primary:
                     self.propagate_entity_invalidation_to_replicas(entity)
                     
                 return metadata_cache_channel_pb2.CacheSetResponse(success=True)
             
-            # For read operations, cache the data as normal
+            # For read operations, cache the data with LRU eviction if needed
             else:
                 print(f"CacheServer {self.server_id}: Caching result for hash {query_hash} (entity: {entity})")
                 
-                # Store in cache
+                # LRU eviction: If we're at capacity and this is a new key, remove oldest entry
+                if len(self.cache) >= self.max_entries and query_hash not in self.cache:
+                    # popitem with last=False removes the first (oldest) item
+                    oldest_key, _ = self.cache.popitem(last=False)
+                    print(f"CacheServer {self.server_id}: LRU eviction removing oldest entry: {oldest_key}")
+                    
+                    # Also clean up entity_index for the evicted item
+                    for entity_key, hash_set in self.entity_index.items():
+                        if oldest_key in hash_set:
+                            hash_set.remove(oldest_key)
+                
+                # Add or update cache entry (if update, it moves to the end automatically)
                 self.cache[query_hash] = result
                 self.offset += 1
                 
@@ -215,8 +239,8 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
                 # Trim backlog if needed
                 if len(self.replication_backlog) > self.backlog_max_size:
                     self.replication_backlog.pop(0)
-                
-                # Handle replication if needed
+                    
+                # Rest of the replication code remains the same...
                 if self.is_primary:
                     if self.ack_policy > 0:
                         # Wait for replication based on ack_policy
@@ -225,18 +249,17 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
                     else:
                         # Default async behavior
                         self.send_to_replicas(query_hash, result, entity, operation)
-
-                
+                        
                 return metadata_cache_channel_pb2.CacheSetResponse(success=True)
 
     def GetLoad(self, request, context):
-        """Handle health check requests from sentinel with high priority"""
-        # Use dedicated lock to avoid contention with other operations
+        """Handle health check requests and report cache statistics"""
         with self.health_lock:
-            # Very minimal processing for health checks
-            load = len(self.cache) if self.cache else 0
-            # print(f"CacheServer {self.server_id}: Health check received from sentinel")
+            load = len(self.cache)
+            capacity_percentage = (load / self.max_entries) * 100 if self.max_entries > 0 else 0
+            print(f"CacheServer {self.server_id}: Current load: {load}/{self.max_entries} ({capacity_percentage:.1f}%)")
             return metadata_cache_channel_pb2.LoadResponse(load=load)
+
 
 
     def GetRole(self, request, context):
@@ -484,11 +507,15 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
             time.sleep(1)
             if self.is_primary:
                 with self.lock:
-                    for stub,_ in list(self.replica_stubs):
+                    for item in list(self.replica_stubs):
+                        # Extract stub properly regardless of format
+                        stub = item[0] if isinstance(item, tuple) else item
+                        
                         status = self.replica_status.get(stub)
                         if status and status["failed_pings"] > 0:
                             print(f"CacheServer {self.server_id}: Retrying ping to replica...")
                             self.handle_replica_timeout(stub)
+
     
     def propagate_entity_invalidation_to_replicas(self, entity):
         """Propagate entity cache invalidation to all replicas"""

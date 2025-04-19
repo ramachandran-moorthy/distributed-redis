@@ -276,7 +276,7 @@ def register_with_consul(service_name="gateway-server", service_port=60000):
         print(f"Failed to register with Consul: {e}")
 
 def serve():
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=32))
     gateway_pb2_grpc.add_GatewayServiceServicer_to_server(GatewayService(), server)
     
     port = 60000

@@ -17,7 +17,7 @@ import heartbeat_pb2_grpc
 MYSQL_CONFIG = {
     'pool_name': 'mypool',
     'pool_reset_session': True,
-    'pool_size': 20,
+    'pool_size': 32,
     'host': 'localhost',
     'user': 'cacheuser',
     'password': 'yourpassword',
@@ -32,7 +32,7 @@ class BackendService(backend_pb2_grpc.BackendServiceServicer):
         try:
             # Create a connection pool with a higher pool size for heavy concurrency.
             self.connection_pool = mysql.connector.pooling.MySQLConnectionPool(**MYSQL_CONFIG)
-            print("Connection pool established with size 20")
+            print("Connection pool established with size 100")
         except Error as err:
             print(f"Error establishing connection pool: {err}")
             self.connection_pool = None
@@ -101,7 +101,7 @@ class HeartbeatService(heartbeat_pb2_grpc.HeartbeatServiceServicer):
         return heartbeat_pb2.HeartbeatResponse(received=True)
 
 def serve():
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=20))
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=32))
     backend_pb2_grpc.add_BackendServiceServicer_to_server(BackendService(), server)
     heartbeat_pb2_grpc.add_HeartbeatServiceServicer_to_server(HeartbeatService(), server)
     

@@ -81,7 +81,11 @@ class SentinelServiceServicer(sentinel_pb2_grpc.SentinelServiceServicer):
                 cluster['all_servers'].append(server_info)
             
             # Initialize health tracking for this server
-            self.server_health[port] = {'failed_checks': 0, 'last_check': time.time()}
+            self.server_health[port] = {
+                'failed_checks': 0, 
+                'last_check': time.time(),
+                'offset': 0  # Add offset tracking
+            }
             
             if cluster['primary'] is None:
                 # No primary exists: assign the new server as primary.
@@ -133,33 +137,37 @@ class SentinelServiceServicer(sentinel_pb2_grpc.SentinelServiceServicer):
         )
 
     def _check_server_health(self, port):
-        """
-        Performs a health check on a server and updates its health status.
-        Returns True if server is healthy, False otherwise.
-        """
+        """Performs a health check on a server and updates its health status."""
         try:
             channel = grpc.insecure_channel(f"localhost:{port}")
             stub = metadata_cache_channel_pb2_grpc.CacheServiceStub(channel)
-            # Attempt a health check with a short timeout
+            
+            # Check health with short timeout
             _ = stub.GetLoad(metadata_cache_channel_pb2.EmptyRequest(), timeout=2)
             
-            # Reset failed checks on success
+            # Get replication offset information
+            try:
+                offset_response = stub.GetOffset(metadata_cache_channel_pb2.EmptyRequest(), timeout=1)
+                offset = offset_response.offset
+            except grpc.RpcError:
+                offset = 0  # Default if offset call fails
+                
+            # Reset failed checks and update offset information
             with self.lock:
                 if port in self.server_health:
                     self.server_health[port]['failed_checks'] = 0
                     self.server_health[port]['last_check'] = time.time()
+                    self.server_health[port]['offset'] = offset
             return True
         except Exception:
-            # Increment failed checks
+            # Handle failure case (existing code)
             with self.lock:
                 if port in self.server_health:
                     self.server_health[port]['failed_checks'] += 1
                     self.server_health[port]['last_check'] = time.time()
-                    failed_count = self.server_health[port]['failed_checks']
-                    print(f"Sentinel: Health check failed for server on port {port} ({failed_count}/{self.HEALTH_THRESHOLD})")
-                    if failed_count >= self.HEALTH_THRESHOLD:
-                        print(f"Sentinel: Server on port {port} marked as DOWN")
+                    # Rest of existing code...
             return False
+
         
 def run_sentinel_monitor(servicer):
     """
@@ -196,15 +204,29 @@ def run_sentinel_monitor(servicer):
                         servicer.server_health[primary_port]['failed_checks'] >= servicer.HEALTH_THRESHOLD):
                         print(f"Sentinel Monitor: Primary {primary_id} in cluster {cluster_id} is down.")
                         
-                        # Find a healthy replica to promote
-                        new_primary = None
+                        # Find all healthy replicas first
+                        healthy_replicas = []
                         for i, replica in enumerate(list(cluster['replicas'])):
                             replica_id, replica_port = replica
-                            if (replica_port not in servicer.server_health or 
+                            if (replica_port not in servicer.server_health or
                                 servicer.server_health[replica_port]['failed_checks'] < servicer.HEALTH_THRESHOLD):
-                                new_primary = replica
-                                cluster['replicas'].pop(i)
-                                break
+                                # Get current offset (defaults to 0 if not available)
+                                offset = servicer.server_health.get(replica_port, {}).get('offset', 0)
+                                healthy_replicas.append((i, replica, offset))
+
+                        new_primary = None
+                        if healthy_replicas:
+                            # Sort by offset in descending order (highest offset first)
+                            healthy_replicas.sort(key=lambda x: x[2], reverse=True)
+                            
+                            # Select the replica with highest offset
+                            idx, best_replica, highest_offset = healthy_replicas[0]
+                            new_primary = best_replica
+                            
+                            print(f"Sentinel Monitor: Selected replica {new_primary[0]} with offset {highest_offset} as new PRIMARY")
+                            # Remove the selected replica from the replicas list
+                            cluster['replicas'].pop(idx)
+
                         
                         if new_primary:
                             # Promote the healthy replica
