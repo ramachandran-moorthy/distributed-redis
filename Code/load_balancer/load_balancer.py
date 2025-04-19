@@ -97,6 +97,8 @@ class LoadBalancerService(load_balancer_pb2_grpc.CacheServiceServicer, metadata_
                 print("LoadBalancer: No active primary cache servers available")
                 return load_balancer_pb2.CacheSetResponse(success=False)
             
+            print("Here in the loop at lb")
+
             # Choose the server with the least load
             least_loaded_id, _, stub = min(primary_loads, key=lambda x: x[1])
             
@@ -109,10 +111,14 @@ class LoadBalancerService(load_balancer_pb2_grpc.CacheServiceServicer, metadata_
                     operation=operation
                 ))
                 
+                print("Here10")
+
                 # Only track in query_map for read operations
                 if operation == "read":
                     self.query_map[query_hash] = least_loaded_id
                     self.query_counts[least_loaded_id] = self.query_counts.get(least_loaded_id, 0) + 1
+                
+                print("Here11")
                 
                 print(f"LoadBalancer: {'Stored result in' if operation == 'read' else 'Processed ' + operation + ' operation on'} Primary CacheServer {least_loaded_id}")
                 return load_balancer_pb2.CacheSetResponse(success=True)

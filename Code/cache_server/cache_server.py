@@ -7,6 +7,7 @@ import threading
 import time
 import uuid
 import zlib
+import threading
 
 # Add the grpc folder to the Python path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../grpc')))
@@ -47,14 +48,20 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
     def health_check_handler(self):
         """Dedicated thread for handling health check requests from sentinel"""
         print(f"CacheServer {self.server_id}: Started dedicated health check thread")
-        
         while self.health_check_running:
-            # Sleep for a short interval
-            time.sleep(0.1)  # 100ms intervals for responsive checks
-            
-            # Nothing to actively do here - the thread's main purpose is
-            # to ensure GetLoad requests can be handled without contention
+            time.sleep(0.1)
 
+    def replicate_async(self, stub, request):
+        thread = threading.Thread(target=self._do_replicate, args=(stub, request))
+        thread.daemon = True
+        thread.start()
+
+    def _do_replicate(self, stub, request):
+        try:
+            stub.SetResult(request, timeout=2.0)
+        except Exception as e:
+            print(f"Replication error: {e}")
+            self.handle_replica_timeout(stub)
 
     def GetResult(self, request, context):
         query_hash = request.query_hash
@@ -73,57 +80,76 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
 
         start_time = time.time()
         timeout_sec = timeout_ms / 1000.0
-
-        # Create sets to track replica acknowledgments
-        pending_replicas = set(self.replica_stubs)
-        acknowledged = set()
-
-        # Send to all replicas
-        for stub in list(self.replica_stubs):
+        
+        # Track successful replications
+        successful_replications = 0  # Start with 1 for the primary server
+        
+        # Create a lock and condition variable for thread synchronization
+        ack_lock = threading.Lock()
+        ack_condition = threading.Condition(ack_lock)
+        
+        # Extract stubs properly
+        replicas_to_contact = []
+        for item in self.replica_stubs:
+            if isinstance(item, tuple):
+                # If tuple (stub, info), extract the stub
+                replicas_to_contact.append(item[0])
+            else:
+                # If already a stub
+                replicas_to_contact.append(item)
+        
+        # Define a callback function to track acknowledgments
+        def ack_callback(stub, success):
+            nonlocal successful_replications
+            with ack_lock:
+                if success:
+                    successful_replications += 1
+                    print(f"Received acknowledgment ({successful_replications}/{num_replicas})")
+                    if successful_replications >= num_replicas:
+                        ack_condition.notify_all()
+        
+        # Create a specialized _do_replicate with callback
+        def _do_replicate_with_callback(stub, request):
             try:
-                ack = stub.SetResult(metadata_cache_channel_pb2.CacheSetRequest(
-                    query_hash=query_hash, 
-                    result=result,
-                    entity=entity,
-                    operation=operation
-                ))
-                if ack.success:
+                response = stub.SetResult(request, timeout=2.0)
+                if response.success:
                     with self.lock:
                         self.replica_status[stub]["offset"] += 1
                         self.replica_status[stub]["failed_pings"] = 0
-                    acknowledged.add(stub)
-                    pending_replicas.remove(stub)
-            except grpc.RpcError:
+                    ack_callback(stub, True)
+                else:
+                    ack_callback(stub, False)
+            except Exception as e:
+                print(f"Replication error: {e}")
                 self.handle_replica_timeout(stub)
+                ack_callback(stub, False)
         
-        # Wait for acknowledgments or timeout
-        while time.time() - start_time < timeout_sec and len(acknowledged) < num_replicas:
-            # Try any remaining replicas that haven't acknowledged yet
-            for stub in list(pending_replicas):
-                try:
-                    ack = stub.SetResult(metadata_cache_channel_pb2.CacheSetRequest(
-                        query_hash=query_hash, 
-                        result=result,
-                        entity=entity,
-                        operation=operation
-                    ))
-                    if ack.success:
-                        with self.lock:
-                            self.replica_status[stub]["offset"] += 1
-                            self.replica_status[stub]["failed_pings"] = 0
-                        acknowledged.add(stub)
-                        pending_replicas.remove(stub)
-                    if len(acknowledged) >= num_replicas:
-                        break
-                except grpc.RpcError:
-                    self.handle_replica_timeout(stub)
-                    pending_replicas.remove(stub)
+        # Launch async replication threads for all replicas
+        for stub in replicas_to_contact:
+            request = metadata_cache_channel_pb2.CacheSetRequest(
+                query_hash=query_hash,
+                result=result,
+                entity=entity,
+                operation=operation
+            )
+            thread = threading.Thread(
+                target=_do_replicate_with_callback,
+                args=(stub, request)
+            )
+            thread.daemon = True
+            thread.start()
+        
+        # Wait for enough acknowledgments or timeout
+        with ack_lock:
+            # Check if we already have enough acks
+            if successful_replications >= num_replicas:
+                return True
             
-            if len(acknowledged) < num_replicas and pending_replicas:
-                time.sleep(0.05)  # Small sleep to prevent CPU spinning
-        
-        print(f"CacheServer {self.server_id}: Waited for replication, got {len(acknowledged)}/{num_replicas} acks")
-        return len(acknowledged) >= num_replicas
+            # Wait for condition with timeout
+            wait_result = ack_condition.wait(timeout_sec)
+            
+            # Return true if we got enough acks, false otherwise
+            return successful_replications >= num_replicas
 
     def _send_and_track_ack(self, stub, query_hash, result, pending_replicas, acknowledged):
         try:
@@ -409,20 +435,23 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
     
 
     def send_to_replicas(self, query_hash, result, entity="", operation="read"):
-        print(f"CacheServer {self.server_id}: Sending result for hash {query_hash} to replicas")
-        for stub, _ in list(self.replica_stubs):
-            try:
-                ack = stub.SetResult(metadata_cache_channel_pb2.CacheSetRequest(
-                    query_hash=query_hash, 
-                    result=result,
-                    entity=entity,
-                    operation=operation
-                ))
-                if ack.success:
-                    self.replica_status[stub]["offset"] += 1
-                    self.replica_status[stub]["failed_pings"] = 0
-            except grpc.RpcError:
-                self.handle_replica_timeout(stub)
+        """Send updates to all replicas asynchronously"""
+        if not self.replica_stubs:
+            return
+        
+        for item in list(self.replica_stubs):
+            # Extract stub properly regardless of format
+            stub = item[0] if isinstance(item, tuple) else item
+            
+            request = metadata_cache_channel_pb2.CacheSetRequest(
+                query_hash=query_hash,
+                result=result,
+                entity=entity,
+                operation=operation
+            )
+            # Use the async method instead of blocking call
+            self.replicate_async(stub, request)
+
 
 
     def handle_replica_timeout(self, stub):
