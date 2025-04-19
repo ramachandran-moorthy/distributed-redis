@@ -203,6 +203,10 @@ def run_client(client_id):
         return None
 
 def main():
+    log_file = open("test_read.log", "w")
+    original_stdout = sys.stdout
+    sys.stdout = log_file
+
     print("=== Distributed System Test Script ===")
     
     # Load modules
@@ -293,6 +297,9 @@ def main():
     
     print("\n=== Client Load Test Complete ===")
     print(f"All {total_clients} client operations completed!")
+
+    sys.stdout = original_stdout
+    log_file.close()
     
     # Keep the system running until manual termination
     print("\nSystem is running. Press Ctrl+C to terminate all threads.")

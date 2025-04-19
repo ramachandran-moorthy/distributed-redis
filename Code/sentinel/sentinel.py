@@ -165,7 +165,10 @@ class SentinelServiceServicer(sentinel_pb2_grpc.SentinelServiceServicer):
                 if port in self.server_health:
                     self.server_health[port]['failed_checks'] += 1
                     self.server_health[port]['last_check'] = time.time()
-                    # Rest of existing code...
+                    failed_count = self.server_health[port]['failed_checks']
+                    print(f"Sentinel: Health check failed for server on port {port} ({failed_count}/{self.HEALTH_THRESHOLD})")
+                    if failed_count >= self.HEALTH_THRESHOLD:
+                        print(f"Sentinel: Server on port {port} marked as DOWN")
             return False
 
         

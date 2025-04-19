@@ -233,9 +233,7 @@ def check_backend_health():
                 request = heartbeat_pb2.HeartbeatRequest(
                     gateway_id=f"gateway-{int(time.time())}"
                 )
-                
-                # Set a shorter timeout for the health check (200ms)
-                response = stub.CheckHealth(request, timeout=0.2)
+                response = stub.CheckHealth(request, timeout=5)
                 
                 # Update health status to healthy
                 with health_lock:

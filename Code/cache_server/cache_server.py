@@ -8,6 +8,8 @@ import time
 import uuid
 import zlib
 import threading
+import signal
+import pickle
 
 import collections
 from collections import OrderedDict
@@ -44,10 +46,87 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
         self.server_port = None
         self.max_entries = 20
 
+        self.persistence_dir = "cache_data"
+        os.makedirs(self.persistence_dir, exist_ok=True)
+        self.persistence_file = f"{self.persistence_dir}/cache_server_{server_id}.pickle"
+        
+        # Load data from file if it exists
+        self.load_from_file()
+        
+        # Set up signal handlers for graceful shutdown
+        signal.signal(signal.SIGINT, self.handle_shutdown)
+        signal.signal(signal.SIGTERM, self.handle_shutdown)
+
         self.health_lock = threading.Lock()
         self.health_check_running = True
         self.health_check_thread = threading.Thread(target=self.health_check_handler, daemon=True)
         self.health_check_thread.start()
+    
+    def save_to_file(self):
+        """Save cache data to a persistence file"""
+        print(f"CacheServer {self.server_id}: Saving cache data to file...")
+        
+        try:
+            with self.lock:
+                # Create a dictionary with all the necessary data
+                data_to_save = {
+                    'cache': self.cache,
+                    'entity_index': self.entity_index,
+                    'offset': self.offset
+                }
+                
+                # Save data to a temporary file first
+                temp_file = f"{self.persistence_file}.temp"
+                with open(temp_file, 'wb') as f:
+                    pickle.dump(data_to_save, f)
+                    
+                # Atomically replace the old file with the new one
+                os.replace(temp_file, self.persistence_file)
+                print(f"CacheServer {self.server_id}: Successfully saved cache data to {self.persistence_file}")
+                
+        except Exception as e:
+            print(f"CacheServer {self.server_id}: Error saving cache data: {e}")
+
+    def load_from_file(self):
+        """Load cache data from a persistence file if it exists"""
+        if not os.path.exists(self.persistence_file):
+            print(f"CacheServer {self.server_id}: No persistence file found at {self.persistence_file}")
+            return False
+        
+        try:
+            print(f"CacheServer {self.server_id}: Loading cache data from {self.persistence_file}")
+            with open(self.persistence_file, 'rb') as f:
+                data = pickle.load(f)
+            
+            # Apply loaded data to the cache server
+            with self.lock:
+                self.cache = data['cache']
+                self.entity_index = data['entity_index'] 
+                self.offset = data['offset']
+                
+            print(f"CacheServer {self.server_id}: Successfully loaded cache with {len(self.cache)} entries")
+            return True
+        except Exception as e:
+            print(f"CacheServer {self.server_id}: Error loading cache data: {e}")
+            return False
+
+    def handle_shutdown(self, signum, frame):
+        """Handle graceful shutdown when SIGINT/SIGTERM is received"""
+        signal_names = {signal.SIGINT: "SIGINT (Ctrl+C)", signal.SIGTERM: "SIGTERM"}
+        signal_name = signal_names.get(signum, str(signum))
+        
+        print(f"\nCacheServer {self.server_id}: Received {signal_name}. Performing graceful shutdown...")
+        
+        # Save cache to file
+        self.save_to_file()
+        
+        # Clean up resources
+        self.health_check_running = False
+        if hasattr(self, "health_check_thread") and self.health_check_thread.is_alive():
+            self.health_check_thread.join(timeout=1.0)
+        
+        print(f"CacheServer {self.server_id}: Shutdown complete. Exiting.")
+        sys.exit(0)
 
     def health_check_handler(self):
         """Dedicated thread for handling health check requests from sentinel"""
@@ -520,12 +599,13 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
     def propagate_entity_invalidation_to_replicas(self, entity):
         """Propagate entity cache invalidation to all replicas"""
         print(f"CacheServer {self.server_id}: Propagating invalidation for entity {entity} to replicas")
-        for stub in list(self.replica_stubs):
+        for item in list(self.replica_stubs):
+            # Extract stub properly regardless of format
+            stub = item[0] if isinstance(item, tuple) else item
             try:
                 _ = stub.InvalidateEntityCache(metadata_cache_channel_pb2.InvalidateEntityRequest(entity=entity))
             except grpc.RpcError:
                 self.handle_replica_timeout(stub)
-
 
     def InvalidateEntityCache(self, request, context):
         """Handle cache invalidation for a specific entity"""
@@ -685,6 +765,12 @@ def serve(server_id, port, cluster_id, primary_port=None, ack_policy=0):
     # If we're a replica and primary_port wasn't specified, use the one from sentinel
     if not assigned_as_primary and primary_port is None:
         primary_port = sentinel_primary_port
+
+        if port == primary_port:
+            print(f"CacheServer {server_id}: Cannot register with self as primary. Port conflict detected.")
+            print(f"CacheServer {server_id}: Switching to PRIMARY mode.")
+            assigned_as_primary = True
+
         if primary_port == 0 or primary_port is None:
             print(f"CacheServer {server_id}: No primary port provided by Sentinel. Cannot register as replica.")
             return
