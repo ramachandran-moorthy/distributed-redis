@@ -35,12 +35,12 @@ class CacheServiceStub(object):
             channel: A grpc.Channel.
         """
         self.GetCachedData = channel.unary_unary(
-                '/cache.CacheService/GetCachedData',
+                '/load_balancer.CacheService/GetCachedData',
                 request_serializer=load__balancer__pb2.CacheRequest.SerializeToString,
                 response_deserializer=load__balancer__pb2.CacheResponse.FromString,
                 _registered_method=True)
         self.SetCachedData = channel.unary_unary(
-                '/cache.CacheService/SetCachedData',
+                '/load_balancer.CacheService/SetCachedData',
                 request_serializer=load__balancer__pb2.CacheSetRequest.SerializeToString,
                 response_deserializer=load__balancer__pb2.CacheSetResponse.FromString,
                 _registered_method=True)
@@ -76,9 +76,9 @@ def add_CacheServiceServicer_to_server(servicer, server):
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'cache.CacheService', rpc_method_handlers)
+            'load_balancer.CacheService', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('cache.CacheService', rpc_method_handlers)
+    server.add_registered_method_handlers('load_balancer.CacheService', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
@@ -99,7 +99,7 @@ class CacheService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/cache.CacheService/GetCachedData',
+            '/load_balancer.CacheService/GetCachedData',
             load__balancer__pb2.CacheRequest.SerializeToString,
             load__balancer__pb2.CacheResponse.FromString,
             options,
@@ -126,7 +126,7 @@ class CacheService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/cache.CacheService/SetCachedData',
+            '/load_balancer.CacheService/SetCachedData',
             load__balancer__pb2.CacheSetRequest.SerializeToString,
             load__balancer__pb2.CacheSetResponse.FromString,
             options,

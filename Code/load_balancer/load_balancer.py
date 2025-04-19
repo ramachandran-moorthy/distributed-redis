@@ -73,14 +73,16 @@ class LoadBalancerService(load_balancer_pb2_grpc.CacheServiceServicer, metadata_
         """Implementation of the load_balancer proto service"""
         key = request.key
         value = request.value
-        query_hash = self.hash_query(key)
+        entity = request.entity if hasattr(request, 'entity') else ""
+        operation = request.operation if hasattr(request, 'operation') else "read"  # Default to read
         
-        print(f"LoadBalancer: Setting cached data for key: {key}, hash: {query_hash}")
+        query_hash = self.hash_query(key)
+        print(f"LoadBalancer: Setting cached data for key: {key}, hash: {query_hash}, operation: {operation}")
         
         if not self.primaries:
             print("LoadBalancer: No primary cache servers available")
             return load_balancer_pb2.CacheSetResponse(success=False)
-            
+        
         with self.lock:
             # Choose the server with the least load
             primary_loads = []
@@ -90,25 +92,34 @@ class LoadBalancerService(load_balancer_pb2_grpc.CacheServiceServicer, metadata_
                     primary_loads.append((server_id, response.load, stub))
                 except grpc.RpcError as e:
                     print(f"LoadBalancer: Failed to get load from server {server_id}: {e}")
-
+            
             if not primary_loads:
                 print("LoadBalancer: No active primary cache servers available")
                 return load_balancer_pb2.CacheSetResponse(success=False)
-                
+            
             # Choose the server with the least load
             least_loaded_id, _, stub = min(primary_loads, key=lambda x: x[1])
             
             try:
-                stub.SetResult(metadata_cache_channel_pb2.CacheSetRequest(query_hash=query_hash, result=value))
-                self.query_map[query_hash] = least_loaded_id
-                self.query_counts[least_loaded_id] = self.query_counts.get(least_loaded_id, 0) + 1
-                print(f"LoadBalancer: Stored result in Primary CacheServer {least_loaded_id}")
+                # Pass operation information to the cache server
+                stub.SetResult(metadata_cache_channel_pb2.CacheSetRequest(
+                    query_hash=query_hash,
+                    result=value,
+                    entity=entity,
+                    operation=operation
+                ))
+                
+                # Only track in query_map for read operations
+                if operation == "read":
+                    self.query_map[query_hash] = least_loaded_id
+                    self.query_counts[least_loaded_id] = self.query_counts.get(least_loaded_id, 0) + 1
+                
+                print(f"LoadBalancer: {'Stored result in' if operation == 'read' else 'Processed ' + operation + ' operation on'} Primary CacheServer {least_loaded_id}")
                 return load_balancer_pb2.CacheSetResponse(success=True)
             except grpc.RpcError as e:
-                print(f"LoadBalancer: Failed to store result in Primary CacheServer {least_loaded_id}: {e}")
+                print(f"LoadBalancer: Failed to communicate with Primary CacheServer {least_loaded_id}: {e}")
                 return load_balancer_pb2.CacheSetResponse(success=False)
 
-    # Original MetadataServer proto implementation (keep these for compatibility)
     def RegisterServer(self, request, context):
         server_id = request.server_id
         port = request.port
@@ -236,7 +247,7 @@ def register_with_consul(port):
         print(f"Failed to register with Consul: {e}")
 
 def serve_load_balancer():
-    port = 50053  # Set a consistent port for the load balancer
+    port = 70000
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     service = LoadBalancerService()
     

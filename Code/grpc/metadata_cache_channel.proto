@@ -9,16 +9,17 @@ service MetadataService {
 }
 
 service CacheService {
-  rpc GetResult (CacheRequest) returns (CacheResponse);
-  rpc SetResult (CacheSetRequest) returns (CacheSetResponse);
-  rpc GetLoad (EmptyRequest) returns (LoadResponse);
-  rpc GetRole (EmptyRequest) returns (RoleResponse);
-  rpc PromoteToPrimary (EmptyRequest) returns (PromotionResponse);
-  rpc RegisterReplica (ReplicaRegisterRequest) returns (ReplicaRegisterResponse);
-  rpc PingWithOffset(PingRequest) returns (PingResponse);
-  rpc GetSnapshot(EmptyRequest) returns (SnapshotResponse);
-  rpc SetSnapshot(SnapshotRequest) returns (SnapshotResponse);
-
+  rpc GetResult (CacheRequest) returns (CacheResponse) {}
+  rpc SetResult (CacheSetRequest) returns (CacheSetResponse) {}
+  rpc GetLoad (EmptyRequest) returns (LoadResponse) {}
+  rpc GetRole (EmptyRequest) returns (RoleResponse) {}
+  rpc PromoteToPrimary (EmptyRequest) returns (PromotionResponse) {}
+  rpc RegisterReplica (ReplicaRegisterRequest) returns (ReplicaRegisterResponse) {}
+  rpc GetSnapshot (EmptyRequest) returns (SnapshotResponse) {}
+  rpc SetSnapshot (SnapshotRequest) returns (SnapshotResponse) {}
+  rpc GetOffset (EmptyRequest) returns (OffsetResponse) {}
+  rpc PingWithOffset (PingRequest) returns (PingResponse) {}
+  rpc InvalidateEntityCache (InvalidateEntityRequest) returns (InvalidateEntityResponse) {}
 }
 
 message QueryRequest {
@@ -36,11 +37,6 @@ message CacheRequest {
 message CacheResponse {
   string result = 1;
   bool found = 2;
-}
-
-message CacheSetRequest {
-  string query_hash = 1;
-  string result = 2;
 }
 
 message CacheSetResponse {
@@ -93,6 +89,7 @@ message NotifyPromotionResponse {
 
 message PingRequest {
   int32 offset = 1;
+  int32 server_id = 2;
 }
 
 message PingResponse {
@@ -106,4 +103,23 @@ message SnapshotRequest {
 message SnapshotResponse {
   bool success = 1;
   bytes data = 2;  // <-- add this line
+}
+
+message CacheSetRequest {
+  string query_hash = 1;
+  string result = 2;
+  string entity = 3;  // The entity/table name
+  string operation = 4;  // Operation type: "read", "create", "update", "delete"
+}
+
+message OffsetResponse {
+  int32 offset = 1;
+}
+
+message InvalidateEntityRequest {
+  string entity = 1;  // The entity/table name to invalidate
+}
+
+message InvalidateEntityResponse {
+  bool success = 1;
 }

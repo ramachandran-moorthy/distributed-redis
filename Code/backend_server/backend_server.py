@@ -1,4 +1,3 @@
-# backend_server.py
 import sys
 from os import path
 
@@ -8,7 +7,6 @@ import grpc
 from concurrent import futures
 import time
 import json
-import threading
 from mysql.connector import Error, pooling
 import mysql.connector
 import backend_pb2
@@ -88,6 +86,7 @@ class BackendService(backend_pb2_grpc.BackendServiceServicer):
             # Always close the connection to return it to the pool.
             connection.close()
 
+        time.sleep(1)
         return backend_pb2.BackendResponse(result=json.dumps(result))
 
 class HeartbeatService(heartbeat_pb2_grpc.HeartbeatServiceServicer):
@@ -95,9 +94,8 @@ class HeartbeatService(heartbeat_pb2_grpc.HeartbeatServiceServicer):
         """
         Handle health check requests from the gateway
         """
-        # Log the health check (but not too frequently to avoid log spam)
-        if int(time.time()) % 10 == 0:  # Log only once every ~10 seconds
-            print(f"Received health check from gateway {request.gateway_id}")
+        # if int(time.time()) % 10 == 0:  # Log only once every ~10 seconds
+        #     print(f"Received health check from gateway {request.gateway_id}")
         
         # Simply respond that the backend is alive
         return heartbeat_pb2.HeartbeatResponse(received=True)
@@ -107,9 +105,9 @@ def serve():
     backend_pb2_grpc.add_BackendServiceServicer_to_server(BackendService(), server)
     heartbeat_pb2_grpc.add_HeartbeatServiceServicer_to_server(HeartbeatService(), server)
     
-    server.add_insecure_port('[::]:50055')
+    server.add_insecure_port('[::]:70200')
     
-    print(f"Backend server {BACKEND_ID} listening on port 50055")
+    print(f"Backend server {BACKEND_ID} listening on port 70200")
     server.start()
     server.wait_for_termination()
 

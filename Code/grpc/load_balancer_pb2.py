@@ -24,21 +24,21 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x13load_balancer.proto\x12\x05\x63\x61\x63he\"\x1b\n\x0c\x43\x61\x63heRequest\x12\x0b\n\x03key\x18\x01 \x01(\t\"-\n\rCacheResponse\x12\r\n\x05\x66ound\x18\x01 \x01(\x08\x12\r\n\x05value\x18\x02 \x01(\t\"-\n\x0f\x43\x61\x63heSetRequest\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t\"#\n\x10\x43\x61\x63heSetResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x32\x8c\x01\n\x0c\x43\x61\x63heService\x12:\n\rGetCachedData\x12\x13.cache.CacheRequest\x1a\x14.cache.CacheResponse\x12@\n\rSetCachedData\x12\x16.cache.CacheSetRequest\x1a\x17.cache.CacheSetResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x13load_balancer.proto\x12\rload_balancer\"\x1b\n\x0c\x43\x61\x63heRequest\x12\x0b\n\x03key\x18\x01 \x01(\t\"-\n\rCacheResponse\x12\r\n\x05\x66ound\x18\x01 \x01(\x08\x12\r\n\x05value\x18\x02 \x01(\t\"P\n\x0f\x43\x61\x63heSetRequest\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t\x12\x0e\n\x06\x65ntity\x18\x03 \x01(\t\x12\x11\n\toperation\x18\x04 \x01(\t\"#\n\x10\x43\x61\x63heSetResponse\x12\x0f\n\x07success\x18\x01 \x01(\x08\x32\xb0\x01\n\x0c\x43\x61\x63heService\x12L\n\rGetCachedData\x12\x1b.load_balancer.CacheRequest\x1a\x1c.load_balancer.CacheResponse\"\x00\x12R\n\rSetCachedData\x12\x1e.load_balancer.CacheSetRequest\x1a\x1f.load_balancer.CacheSetResponse\"\x00\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'load_balancer_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_CACHEREQUEST']._serialized_start=30
-  _globals['_CACHEREQUEST']._serialized_end=57
-  _globals['_CACHERESPONSE']._serialized_start=59
-  _globals['_CACHERESPONSE']._serialized_end=104
-  _globals['_CACHESETREQUEST']._serialized_start=106
-  _globals['_CACHESETREQUEST']._serialized_end=151
-  _globals['_CACHESETRESPONSE']._serialized_start=153
-  _globals['_CACHESETRESPONSE']._serialized_end=188
-  _globals['_CACHESERVICE']._serialized_start=191
-  _globals['_CACHESERVICE']._serialized_end=331
+  _globals['_CACHEREQUEST']._serialized_start=38
+  _globals['_CACHEREQUEST']._serialized_end=65
+  _globals['_CACHERESPONSE']._serialized_start=67
+  _globals['_CACHERESPONSE']._serialized_end=112
+  _globals['_CACHESETREQUEST']._serialized_start=114
+  _globals['_CACHESETREQUEST']._serialized_end=194
+  _globals['_CACHESETRESPONSE']._serialized_start=196
+  _globals['_CACHESETRESPONSE']._serialized_end=231
+  _globals['_CACHESERVICE']._serialized_start=234
+  _globals['_CACHESERVICE']._serialized_end=410
 # @@protoc_insertion_point(module_scope)

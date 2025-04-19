@@ -24,7 +24,7 @@ backend_health = {
 health_lock = threading.Lock()
 
 # Global variable for load balancer address
-load_balancer_address = "localhost:50053"  # Default, will be updated from Consul
+load_balancer_address = "localhost:70000"  # Default, will be updated from Consul
 
 def discover_load_balancer():
     """Discover load balancer from Consul"""
@@ -35,7 +35,7 @@ def discover_load_balancer():
         for service in services.values():
             if service.get("Service") == "load-balancer":
                 address = service.get("Address", "localhost")
-                port = service.get("Port", 50053)
+                port = service.get("Port", 70000)
                 load_balancer_address = f"{address}:{port}"
                 print(f"Gateway: Discovered load balancer at {load_balancer_address}")
                 return True
@@ -266,7 +266,7 @@ class GatewayService(gateway_pb2_grpc.GatewayServiceServicer):
             
             # Call backend server via gRPC.
             try:
-                with grpc.insecure_channel("localhost:50055") as backend_channel:
+                with grpc.insecure_channel("localhost:70200") as backend_channel:
                     backend_stub = backend_pb2_grpc.BackendServiceStub(backend_channel)
                     backend_resp = backend_stub.ExecuteSQL(
                         backend_pb2.BackendRequest(sql_query=sql_query, params=json.dumps({"params": params}))
@@ -280,13 +280,22 @@ class GatewayService(gateway_pb2_grpc.GatewayServiceServicer):
                     "details": str(e)
                 }))
             
-            # Try to cache the result, but don't fail if cache is down
+            # After processing the query in the gateway
+            operation = query_data.get('operation', 'read')  # Default to read if not specified
+            entity = query_data.get('entity', '')
+
+            # For all operations, call SetCachedData with operation type
             try:
                 with grpc.insecure_channel(load_balancer_address) as cache_channel:
                     cache_stub = load_balancer_pb2_grpc.CacheServiceStub(cache_channel)
-                    _ = cache_stub.SetCachedData(load_balancer_pb2.CacheSetRequest(key=cache_key, value=backend_resp.result))
+                    _ = cache_stub.SetCachedData(load_balancer_pb2.CacheSetRequest(
+                        key=cache_key, 
+                        value=backend_resp.result, 
+                        entity=entity,
+                        operation=operation))  # Include operation
             except grpc.RpcError as e:
-                print(f"Gateway: Warning: Failed to cache result: {e}")
+                print(f"Gateway: Warning: Failed to communicate with cache: {e}")
+
             
             return gateway_pb2.GatewayResponse(response=backend_resp.result)
         
@@ -296,7 +305,7 @@ def check_backend_health():
     
     while True:
         try:
-            with grpc.insecure_channel("localhost:50055") as channel:
+            with grpc.insecure_channel("localhost:70200") as channel:
                 stub = heartbeat_pb2_grpc.HeartbeatServiceStub(channel)
                 request = heartbeat_pb2.HeartbeatRequest(
                     gateway_id=f"gateway-{int(time.time())}"
@@ -328,7 +337,7 @@ def check_backend_health():
         
         time.sleep(0.5)
 
-def register_with_consul(service_name="gateway-server", service_port=50051):
+def register_with_consul(service_name="gateway-server", service_port=60000):
     try:
         c = consul.Consul()
         service_id = f"{service_name}-{int(time.time())}"
@@ -347,7 +356,7 @@ def serve():
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     gateway_pb2_grpc.add_GatewayServiceServicer_to_server(GatewayService(), server)
     
-    port = 50051
+    port = 60000
     server.add_insecure_port(f"[::]:{port}")
     
     # Try to discover load balancer from Consul

@@ -25,6 +25,7 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
     def __init__(self, server_id, is_primary=False, cluster_id=None, ack_policy=0):
         self.server_id = server_id
         self.cache = {}  # hash -> result
+        self.entity_index = {}  # (entity_type, entity_id) -> set of query_hash
         self.is_primary = is_primary
         self.lock = threading.Lock()
         self.replica_stubs = []
@@ -38,6 +39,23 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
         self.replication_timeout_ms = 1000
         self.server_port = None
 
+        self.health_lock = threading.Lock()
+        self.health_check_running = True
+        self.health_check_thread = threading.Thread(target=self.health_check_handler, daemon=True)
+        self.health_check_thread.start()
+
+    def health_check_handler(self):
+        """Dedicated thread for handling health check requests from sentinel"""
+        print(f"CacheServer {self.server_id}: Started dedicated health check thread")
+        
+        while self.health_check_running:
+            # Sleep for a short interval
+            time.sleep(0.1)  # 100ms intervals for responsive checks
+            
+            # Nothing to actively do here - the thread's main purpose is
+            # to ensure GetLoad requests can be handled without contention
+
+
     def GetResult(self, request, context):
         query_hash = request.query_hash
         with self.lock:
@@ -46,24 +64,29 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
         print(f"CacheServer {self.server_id}: GetResult for hash {query_hash}, found: {found}")
         return metadata_cache_channel_pb2.CacheResponse(result=result, found=found)
     
-    def wait_for_replicas(self, query_hash, result, num_replicas, timeout_ms):
+    def wait_for_replicas(self, query_hash, result, num_replicas, timeout_ms, entity="", operation="read"):
         """Wait for at least num_replicas to acknowledge receiving the data"""
         if not self.replica_stubs or len(self.replica_stubs) < num_replicas:
             # Still do async replication but return false if we can't satisfy the policy
-            self.send_to_replicas(query_hash, result)
+            self.send_to_replicas(query_hash, result, entity, operation)
             return False
-        
+
         start_time = time.time()
         timeout_sec = timeout_ms / 1000.0
-        
+
         # Create sets to track replica acknowledgments
         pending_replicas = set(self.replica_stubs)
         acknowledged = set()
-        
+
         # Send to all replicas
         for stub in list(self.replica_stubs):
             try:
-                ack = stub.SetResult(metadata_cache_channel_pb2.CacheSetRequest(query_hash=query_hash, result=result))
+                ack = stub.SetResult(metadata_cache_channel_pb2.CacheSetRequest(
+                    query_hash=query_hash, 
+                    result=result,
+                    entity=entity,
+                    operation=operation
+                ))
                 if ack.success:
                     with self.lock:
                         self.replica_status[stub]["offset"] += 1
@@ -78,15 +101,20 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
             # Try any remaining replicas that haven't acknowledged yet
             for stub in list(pending_replicas):
                 try:
-                    ack = stub.SetResult(metadata_cache_channel_pb2.CacheSetRequest(query_hash=query_hash, result=result))
+                    ack = stub.SetResult(metadata_cache_channel_pb2.CacheSetRequest(
+                        query_hash=query_hash, 
+                        result=result,
+                        entity=entity,
+                        operation=operation
+                    ))
                     if ack.success:
                         with self.lock:
                             self.replica_status[stub]["offset"] += 1
                             self.replica_status[stub]["failed_pings"] = 0
                         acknowledged.add(stub)
                         pending_replicas.remove(stub)
-                        if len(acknowledged) >= num_replicas:
-                            break
+                    if len(acknowledged) >= num_replicas:
+                        break
                 except grpc.RpcError:
                     self.handle_replica_timeout(stub)
                     pending_replicas.remove(stub)
@@ -113,32 +141,77 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
     def SetResult(self, request, context):
         query_hash = request.query_hash
         result = request.result
-        print(f"CacheServer {self.server_id}: saving hash {query_hash} with value {result}")
+        entity = request.entity
+        operation = request.operation if hasattr(request, 'operation') else "read"  # Default to read
+        
+        print(f"CacheServer {self.server_id}: Processing {operation} operation for entity {entity}")
         
         with self.lock:
-            self.cache[query_hash] = result
-            self.offset += 1
+            # For write operations, invalidate the cache for this entity
+            if operation in ["create", "update", "delete"]:
+                print(f"CacheServer {self.server_id}: Invalidating cache for entity {entity} due to {operation} operation")
+                
+                # Collect the keys to invalidate
+                keys_to_invalidate = []
+                if entity in self.entity_index:
+                    keys_to_invalidate = list(self.entity_index[entity])
+                    
+                    # Remove these keys from the cache
+                    for query_hash in keys_to_invalidate:
+                        if query_hash in self.cache:
+                            del self.cache[query_hash]
+                    
+                    # Clear the entity index for this entity
+                    self.entity_index[entity] = set()
+                    
+                # Propagate invalidation to replicas if this is a primary
+                if self.is_primary:
+                    self.propagate_entity_invalidation_to_replicas(entity)
+                    
+                return metadata_cache_channel_pb2.CacheSetResponse(success=True)
             
-            # Add to replication backlog (change #6)
-            self.replication_backlog.append((self.offset, query_hash, result))
-            
-            # Trim backlog if needed
-            if len(self.replication_backlog) > self.backlog_max_size:
-                self.replication_backlog.pop(0)
-        
-        if self.is_primary:
-            if self.ack_policy > 0:
-                # Wait for replication based on ack_policy
-                success = self.wait_for_replicas(query_hash, result, self.ack_policy, self.replication_timeout_ms)
-                return metadata_cache_channel_pb2.CacheSetResponse(success=success)
+            # For read operations, cache the data as normal
             else:
-                # Default async behavior
-                self.send_to_replicas(query_hash, result)
-        
-        return metadata_cache_channel_pb2.CacheSetResponse(success=True)
+                print(f"CacheServer {self.server_id}: Caching result for hash {query_hash} (entity: {entity})")
+                
+                # Store in cache
+                self.cache[query_hash] = result
+                self.offset += 1
+                
+                # Track this key for the given entity
+                if entity not in self.entity_index:
+                    self.entity_index[entity] = set()
+                self.entity_index[entity].add(query_hash)
+                
+                # Add to replication backlog
+                self.replication_backlog.append((self.offset, query_hash, result, entity, operation))
+                
+                # Trim backlog if needed
+                if len(self.replication_backlog) > self.backlog_max_size:
+                    self.replication_backlog.pop(0)
+                
+                # Handle replication if needed
+                if self.is_primary:
+                    if self.ack_policy > 0:
+                        # Wait for replication based on ack_policy
+                        success = self.wait_for_replicas(query_hash, result, self.ack_policy, self.replication_timeout_ms, entity, operation)
+                        return metadata_cache_channel_pb2.CacheSetResponse(success=success)
+                    else:
+                        # Default async behavior
+                        self.send_to_replicas(query_hash, result, entity, operation)
+
+                
+                return metadata_cache_channel_pb2.CacheSetResponse(success=True)
 
     def GetLoad(self, request, context):
-        return metadata_cache_channel_pb2.LoadResponse(load=len(self.cache))
+        """Handle health check requests from sentinel with high priority"""
+        # Use dedicated lock to avoid contention with other operations
+        with self.health_lock:
+            # Very minimal processing for health checks
+            load = len(self.cache) if self.cache else 0
+            # print(f"CacheServer {self.server_id}: Health check received from sentinel")
+            return metadata_cache_channel_pb2.LoadResponse(load=load)
+
 
     def GetRole(self, request, context):
         return metadata_cache_channel_pb2.RoleResponse(is_primary=self.is_primary)
@@ -168,7 +241,7 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
         
         return metadata_cache_channel_pb2.PromotionResponse(success=True)
 
-    def discover_replicas(self, sentinel_port=50060):
+    def discover_replicas(self, sentinel_port=70100):
         """Discover and connect to all replicas in the cluster"""
         try:
             # Connect to sentinel and get replica information
@@ -210,14 +283,21 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
     def RegisterReplica(self, request, context):
         replica_id = request.replica_id
         replica_port = request.replica_port
+        
         try:
-            channel = grpc.insecure_channel(f'localhost:{replica_port}')
+            target_address = f'localhost:{replica_port}'
+            channel = grpc.insecure_channel(target_address)
             stub = metadata_cache_channel_pb2_grpc.CacheServiceStub(channel)
+            
             with self.lock:
-                self.replica_stubs.append(stub)
+                # Store both stub and its target address
+                self.replica_stubs.append((stub, {
+                    'target_address': f'localhost:{replica_port}',
+                    'server_id': replica_id
+                }))
                 self.replica_status[stub] = {"offset": 0, "failed_pings": 0}
+            
             print(f"CacheServer {self.server_id}: Registered replica {replica_id}")
-            # Return a response indicating success.
             return metadata_cache_channel_pb2.ReplicaRegisterResponse(success=True)
         except Exception as e:
             print(f"CacheServer {self.server_id}: Error during replica registration: {e}")
@@ -239,45 +319,54 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
             self.offset = len(self.cache)
         print(f"CacheServer {self.server_id}: Replica updated with snapshot")
         return metadata_cache_channel_pb2.SnapshotResponse(success=True, data=request.data)
-    
+
     def GetOffset(self, request, context):
         return metadata_cache_channel_pb2.OffsetResponse(offset=self.offset)
     
     def PingWithOffset(self, request, context):
         replica_offset = request.offset
+        replica_id = request.server_id if hasattr(request, 'server_id') else None
         
-        # When replica is behind but within backlog range, send incremental updates
         if replica_offset < self.offset:
-            # Get peer information to identify the replica
-            peer = context.peer()
-            replica_addr = peer.split(':')[-1]
-            print(f"CacheServer {self.server_id}: Replica at {replica_addr} is behind (offset {replica_offset} vs {self.offset})")
+            print(f"CacheServer {self.server_id}: Replica {replica_id} is behind (offset {replica_offset} vs {self.offset})")
             
-            # Calculate what data needs to be sent to catch up the replica
+            # Calculate missing commands
             missing_commands = []
-            for cmd_offset, query_hash, result in self.replication_backlog:
+            for cmd_offset, query_hash, result, entity, operation in self.replication_backlog:
                 if cmd_offset > replica_offset:
-                    missing_commands.append((query_hash, result))
+                    missing_commands.append((query_hash, result, entity, operation))
             
-            # If the replica is too far behind, indicate it should request a full snapshot
+            # Check if replica needs full snapshot
             if not missing_commands or replica_offset < self.offset - len(self.replication_backlog):
                 print(f"CacheServer {self.server_id}: Replica too far behind, needs full snapshot")
                 return metadata_cache_channel_pb2.PingResponse(up_to_date=False)
             else:
-                # Catch up replica with just the missing commands
+                # Send incremental updates
                 print(f"CacheServer {self.server_id}: Sending {len(missing_commands)} incremental updates to replica")
                 success = True
-                for query_hash, result in missing_commands:
+                
+                for query_hash, result, entity, operation in missing_commands:
                     try:
-                        # Find the replica in our replica stubs and send the command
-                        for stub in self.replica_stubs:
-                            if peer == stub.target():  # Match the replica by address
-                                response = stub.SetResult(metadata_cache_channel_pb2.CacheSetRequest(
-                                    query_hash=query_hash, result=result
-                                ))
-                                if not response.success:
-                                    success = False
-                                    break
+                        # Find matching stub by address
+                        matching_stub = None
+                        for stub, stub_info in self.replica_stubs:
+                            if stub_info.get('server_id') == replica_id:
+                                matching_stub = stub
+                                break
+                        
+                        if matching_stub:
+                            response = matching_stub.SetResult(metadata_cache_channel_pb2.CacheSetRequest(
+                                query_hash=query_hash,
+                                result=result,
+                                entity=entity,
+                                operation=operation
+                            ))
+                            if not response.success:
+                                success = False
+                                break
+                        else:
+                            print(f"CacheServer {self.server_id}: No matching stub found for {replica_id}")
+                            success = False
                     except Exception as e:
                         print(f"CacheServer {self.server_id}: Error sending incremental update: {e}")
                         success = False
@@ -305,16 +394,36 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
         except grpc.RpcError as e:
             print(f"[REPLICA DEBUG] Failed to get snapshot: {e}")
 
-    def send_to_replicas(self, query_hash, result):
+    def send_snapshot_to_replica(self, replica_stub):
+        """Send the current cache snapshot to a replica"""
+        try:
+            with self.lock:
+                compressed_data = zlib.compress(str(self.cache).encode())
+            response = replica_stub.SetSnapshot(metadata_cache_channel_pb2.SnapshotRequest(data=compressed_data))
+            if response.success:
+                print(f"CacheServer {self.server_id}: Sent snapshot to replica successfully")
+            else:
+                print(f"CacheServer {self.server_id}: Failed to send snapshot to replica")
+        except Exception as e:
+            print(f"CacheServer {self.server_id}: Error sending snapshot to replica: {e}")
+    
+
+    def send_to_replicas(self, query_hash, result, entity="", operation="read"):
         print(f"CacheServer {self.server_id}: Sending result for hash {query_hash} to replicas")
-        for stub in list(self.replica_stubs):
+        for stub, _ in list(self.replica_stubs):
             try:
-                ack = stub.SetResult(metadata_cache_channel_pb2.CacheSetRequest(query_hash=query_hash, result=result))
+                ack = stub.SetResult(metadata_cache_channel_pb2.CacheSetRequest(
+                    query_hash=query_hash, 
+                    result=result,
+                    entity=entity,
+                    operation=operation
+                ))
                 if ack.success:
                     self.replica_status[stub]["offset"] += 1
                     self.replica_status[stub]["failed_pings"] = 0
             except grpc.RpcError:
                 self.handle_replica_timeout(stub)
+
 
     def handle_replica_timeout(self, stub):
         status = self.replica_status.get(stub, None)
@@ -326,7 +435,10 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
         elif status["failed_pings"] <= MAX_RETRY:
             self.ping_and_snapshot(stub)
             print(f"CacheServer {self.server_id}: Marking replica as DOWN")
-            self.replica_stubs.remove(stub)
+            for i, (s, _) in enumerate(self.replica_stubs):
+                if s == stub:
+                    self.replica_stubs.pop(i)
+                    break
             del self.replica_status[stub]
 
     def ping_and_snapshot(self, stub):
@@ -343,13 +455,59 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
             time.sleep(1)
             if self.is_primary:
                 with self.lock:
-                    for stub in list(self.replica_stubs):
+                    for stub,_ in list(self.replica_stubs):
                         status = self.replica_status.get(stub)
                         if status and status["failed_pings"] > 0:
                             print(f"CacheServer {self.server_id}: Retrying ping to replica...")
                             self.handle_replica_timeout(stub)
+    
+    def propagate_entity_invalidation_to_replicas(self, entity):
+        """Propagate entity cache invalidation to all replicas"""
+        print(f"CacheServer {self.server_id}: Propagating invalidation for entity {entity} to replicas")
+        for stub in list(self.replica_stubs):
+            try:
+                _ = stub.InvalidateEntityCache(metadata_cache_channel_pb2.InvalidateEntityRequest(entity=entity))
+            except grpc.RpcError:
+                self.handle_replica_timeout(stub)
 
-def register_with_sentinel(server_id, port, cluster_id, sentinel_address="localhost", sentinel_port=50060):
+
+    def InvalidateEntityCache(self, request, context):
+        """Handle cache invalidation for a specific entity"""
+        entity = request.entity
+        print(f"CacheServer {self.server_id}: Invalidating cache for entity {entity}")
+        
+        keys_to_invalidate = []
+        with self.lock:
+            if entity in self.entity_index:
+                keys_to_invalidate = list(self.entity_index[entity])
+                
+                # Remove these keys from the cache
+                for query_hash in keys_to_invalidate:
+                    if query_hash in self.cache:
+                        del self.cache[query_hash]
+                
+                # Clear the entity index for this entity
+                self.entity_index[entity] = set()
+        
+        # Propagate invalidation to replicas if this is a primary
+        if self.is_primary:
+            self.propagate_entity_invalidation_to_replicas(entity)
+        
+        return metadata_cache_channel_pb2.InvalidateEntityResponse(success=True)
+    
+    def start_health_check_thread(self):
+        def health_check_handler():
+            while True:
+                # Process any pending health check requests with priority
+                time.sleep(0.1)  # Small sleep to prevent CPU spinning
+        
+        health_thread = threading.Thread(target=health_check_handler, daemon=True)
+        health_thread.start()
+        print(f"CacheServer {self.server_id}: Health check thread started")
+
+
+
+def register_with_sentinel(server_id, port, cluster_id, sentinel_address="localhost", sentinel_port=70100):
     """
     Register with the sentinel service to determine role
     """
@@ -401,7 +559,10 @@ def register_with_primary(replica_id, replica_port, primary_port, cache_server):
             # Try to get incremental updates first
             try:
                 # Send our current offset to the primary
-                ping_request = metadata_cache_channel_pb2.PingRequest(offset=current_offset)
+                ping_request = metadata_cache_channel_pb2.PingRequest(
+                    offset=current_offset,
+                    server_id=replica_id  # Add replica's ID
+                )
                 pong = stub.PingWithOffset(ping_request)
                 
                 if pong.up_to_date:
@@ -412,7 +573,10 @@ def register_with_primary(replica_id, replica_port, primary_port, cache_server):
                     
                     # Check if replica is still behind after PingWithOffset
                     # PingWithOffset should have tried to catch us up if possible
-                    verify_request = metadata_cache_channel_pb2.PingRequest(offset=cache_server.offset)
+                    verify_request = metadata_cache_channel_pb2.PingRequest(
+                        offset=cache_server.offset,
+                        server_id=replica_id
+                    )
                     verify_pong = stub.PingWithOffset(verify_request)
                     
                     if not verify_pong.up_to_date:
@@ -428,7 +592,7 @@ def register_with_primary(replica_id, replica_port, primary_port, cache_server):
     except Exception as e:
         print(f"CacheServer {replica_id}: Error during registration with primary: {e}")
 
-def register_with_load_balancer(server_id, port, cluster_id, load_balancer_address="localhost", load_balancer_port=50053):
+def register_with_load_balancer(server_id, port, cluster_id, load_balancer_address="localhost", load_balancer_port=70000):
     try:
         channel = grpc.insecure_channel(f"{load_balancer_address}:{load_balancer_port}")
         stub = metadata_cache_channel_pb2_grpc.MetadataServiceStub(channel)
@@ -446,7 +610,7 @@ def register_with_load_balancer(server_id, port, cluster_id, load_balancer_addre
     except Exception as e:
         print(f"CacheServer {server_id}: Error registering with load balancer: {e}")
 
-def get_primary_port(cluster_id, sentinel_address="localhost", sentinel_port=50060):
+def get_primary_port(cluster_id, sentinel_address="localhost", sentinel_port=70100):
     try:
         channel = grpc.insecure_channel(f"{sentinel_address}:{sentinel_port}")
         stub = sentinel_pb2_grpc.SentinelServiceStub(channel)
@@ -478,6 +642,8 @@ def serve(server_id, port, cluster_id, primary_port=None, ack_policy=0):
     server.start()
 
     if assigned_as_primary:
+        register_with_load_balancer(server_id, port, cluster_id)
+
         threading.Thread(target=cache_server.replica_handler, daemon=True).start()
         ack_description = {
             0: "async (no waiting)",

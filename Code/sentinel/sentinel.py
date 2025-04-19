@@ -18,10 +18,10 @@ import metadata_cache_channel_pb2
 import metadata_cache_channel_pb2_grpc
 
 # Sentinel configuration
-SENTINEL_PORT = 50060
+SENTINEL_PORT = 70100
 CHECK_INTERVAL = 5  # seconds
 
-def notify_load_balancer(new_primary, cluster_id, load_balancer_address="localhost", load_balancer_port=50053, max_retries=3):
+def notify_load_balancer(new_primary, cluster_id, load_balancer_address="localhost", load_balancer_port=70000, max_retries=3):
     """
     Notifies the load balancer that the primary has changed.
     new_primary is a tuple: (server_id, port)

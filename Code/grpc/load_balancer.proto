@@ -1,10 +1,10 @@
 syntax = "proto3";
 
-package cache;
+package load_balancer;
 
 service CacheService {
-  rpc GetCachedData(CacheRequest) returns (CacheResponse);
-  rpc SetCachedData(CacheSetRequest) returns (CacheSetResponse);
+  rpc GetCachedData (CacheRequest) returns (CacheResponse) {}
+  rpc SetCachedData (CacheSetRequest) returns (CacheSetResponse) {}
 }
 
 message CacheRequest {
@@ -19,6 +19,8 @@ message CacheResponse {
 message CacheSetRequest {
   string key = 1;
   string value = 2;
+  string entity = 3;  // The entity/table name
+  string operation = 4;  // Operation type: "read", "create", "update", "delete"
 }
 
 message CacheSetResponse {

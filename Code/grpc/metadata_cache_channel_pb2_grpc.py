@@ -222,11 +222,6 @@ class CacheServiceStub(object):
                 request_serializer=metadata__cache__channel__pb2.ReplicaRegisterRequest.SerializeToString,
                 response_deserializer=metadata__cache__channel__pb2.ReplicaRegisterResponse.FromString,
                 _registered_method=True)
-        self.PingWithOffset = channel.unary_unary(
-                '/metadata_cache.CacheService/PingWithOffset',
-                request_serializer=metadata__cache__channel__pb2.PingRequest.SerializeToString,
-                response_deserializer=metadata__cache__channel__pb2.PingResponse.FromString,
-                _registered_method=True)
         self.GetSnapshot = channel.unary_unary(
                 '/metadata_cache.CacheService/GetSnapshot',
                 request_serializer=metadata__cache__channel__pb2.EmptyRequest.SerializeToString,
@@ -236,6 +231,21 @@ class CacheServiceStub(object):
                 '/metadata_cache.CacheService/SetSnapshot',
                 request_serializer=metadata__cache__channel__pb2.SnapshotRequest.SerializeToString,
                 response_deserializer=metadata__cache__channel__pb2.SnapshotResponse.FromString,
+                _registered_method=True)
+        self.GetOffset = channel.unary_unary(
+                '/metadata_cache.CacheService/GetOffset',
+                request_serializer=metadata__cache__channel__pb2.EmptyRequest.SerializeToString,
+                response_deserializer=metadata__cache__channel__pb2.OffsetResponse.FromString,
+                _registered_method=True)
+        self.PingWithOffset = channel.unary_unary(
+                '/metadata_cache.CacheService/PingWithOffset',
+                request_serializer=metadata__cache__channel__pb2.PingRequest.SerializeToString,
+                response_deserializer=metadata__cache__channel__pb2.PingResponse.FromString,
+                _registered_method=True)
+        self.InvalidateEntityCache = channel.unary_unary(
+                '/metadata_cache.CacheService/InvalidateEntityCache',
+                request_serializer=metadata__cache__channel__pb2.InvalidateEntityRequest.SerializeToString,
+                response_deserializer=metadata__cache__channel__pb2.InvalidateEntityResponse.FromString,
                 _registered_method=True)
 
 
@@ -278,12 +288,6 @@ class CacheServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def PingWithOffset(self, request, context):
-        """Missing associated documentation comment in .proto file."""
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
     def GetSnapshot(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
@@ -291,6 +295,24 @@ class CacheServiceServicer(object):
         raise NotImplementedError('Method not implemented!')
 
     def SetSnapshot(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetOffset(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def PingWithOffset(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def InvalidateEntityCache(self, request, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -329,11 +351,6 @@ def add_CacheServiceServicer_to_server(servicer, server):
                     request_deserializer=metadata__cache__channel__pb2.ReplicaRegisterRequest.FromString,
                     response_serializer=metadata__cache__channel__pb2.ReplicaRegisterResponse.SerializeToString,
             ),
-            'PingWithOffset': grpc.unary_unary_rpc_method_handler(
-                    servicer.PingWithOffset,
-                    request_deserializer=metadata__cache__channel__pb2.PingRequest.FromString,
-                    response_serializer=metadata__cache__channel__pb2.PingResponse.SerializeToString,
-            ),
             'GetSnapshot': grpc.unary_unary_rpc_method_handler(
                     servicer.GetSnapshot,
                     request_deserializer=metadata__cache__channel__pb2.EmptyRequest.FromString,
@@ -343,6 +360,21 @@ def add_CacheServiceServicer_to_server(servicer, server):
                     servicer.SetSnapshot,
                     request_deserializer=metadata__cache__channel__pb2.SnapshotRequest.FromString,
                     response_serializer=metadata__cache__channel__pb2.SnapshotResponse.SerializeToString,
+            ),
+            'GetOffset': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetOffset,
+                    request_deserializer=metadata__cache__channel__pb2.EmptyRequest.FromString,
+                    response_serializer=metadata__cache__channel__pb2.OffsetResponse.SerializeToString,
+            ),
+            'PingWithOffset': grpc.unary_unary_rpc_method_handler(
+                    servicer.PingWithOffset,
+                    request_deserializer=metadata__cache__channel__pb2.PingRequest.FromString,
+                    response_serializer=metadata__cache__channel__pb2.PingResponse.SerializeToString,
+            ),
+            'InvalidateEntityCache': grpc.unary_unary_rpc_method_handler(
+                    servicer.InvalidateEntityCache,
+                    request_deserializer=metadata__cache__channel__pb2.InvalidateEntityRequest.FromString,
+                    response_serializer=metadata__cache__channel__pb2.InvalidateEntityResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -518,33 +550,6 @@ class CacheService(object):
             _registered_method=True)
 
     @staticmethod
-    def PingWithOffset(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/metadata_cache.CacheService/PingWithOffset',
-            metadata__cache__channel__pb2.PingRequest.SerializeToString,
-            metadata__cache__channel__pb2.PingResponse.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
     def GetSnapshot(request,
             target,
             options=(),
@@ -588,6 +593,87 @@ class CacheService(object):
             '/metadata_cache.CacheService/SetSnapshot',
             metadata__cache__channel__pb2.SnapshotRequest.SerializeToString,
             metadata__cache__channel__pb2.SnapshotResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetOffset(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/metadata_cache.CacheService/GetOffset',
+            metadata__cache__channel__pb2.EmptyRequest.SerializeToString,
+            metadata__cache__channel__pb2.OffsetResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def PingWithOffset(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/metadata_cache.CacheService/PingWithOffset',
+            metadata__cache__channel__pb2.PingRequest.SerializeToString,
+            metadata__cache__channel__pb2.PingResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def InvalidateEntityCache(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/metadata_cache.CacheService/InvalidateEntityCache',
+            metadata__cache__channel__pb2.InvalidateEntityRequest.SerializeToString,
+            metadata__cache__channel__pb2.InvalidateEntityResponse.FromString,
             options,
             channel_credentials,
             insecure,
