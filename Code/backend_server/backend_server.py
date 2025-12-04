@@ -85,8 +85,10 @@ class BackendService(backend_pb2_grpc.BackendServiceServicer):
         finally:
             # Always close the connection to return it to the pool.
             connection.close()
-
-        time.sleep(1)
+            print("Before sleep")
+            time.sleep(1)
+            print("After sleep")
+        
         return backend_pb2.BackendResponse(result=json.dumps(result))
 
 class HeartbeatService(heartbeat_pb2_grpc.HeartbeatServiceServicer):

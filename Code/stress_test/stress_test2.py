@@ -114,7 +114,8 @@ def run_gateway(gateway_module):
         # Wait for termination
         while running:
             time.sleep(1)
-        
+            
+        # Before exiting, print latency statistics
         with gateway_module.latency_lock:
             if gateway_module.request_latencies:
                 avg_latency = statistics.mean(gateway_module.request_latencies)
@@ -194,64 +195,30 @@ def run_cache_server(cache_module, server_id, ack_policy=0):
     except Exception as e:
         print(f"Error in cache server {server_id} thread: {e}")
 
-def run_client(client_id, operation_type="read"):
-    """
-    Run a client with the specified operation type
-    
-    Args:
-        client_id: Unique identifier for this client
-        operation_type: One of "read", "create", "update", "delete"
-    """
-    print(f"Client {client_id} sending {operation_type} query...")
-    
-    # Generate a student ID based on client_id to ensure consistency
+def run_client(client_id):
+    print(f"Client {client_id} sending read query...")
+    # Generate a random student ID to query
     student_id = client_id % 100 + 1  # Cycle through 100 student IDs
-    
-    # Prepare query data based on operation type
-    if operation_type == "read":
-        query_data = json.dumps({"student_id": student_id})
-    elif operation_type == "create":
-        query_data = json.dumps({
-            "student_id": student_id,
-            "first_name": f"Student_{client_id}",
-            "program": f"Dept_{random.randint(1, 5)}",
-            "admission_year": random.randint(1, 4)
-        })
-    elif operation_type == "update":
-        query_data = json.dumps({
-            "student_id": student_id,
-            "first_name": f"Updated_Student_{client_id}",
-            "program": f"Dept_{random.randint(1, 5)}",
-            "admission_year": random.randint(1, 4)
-        })
-    elif operation_type == "delete":
-        query_data = json.dumps({"student_id": student_id})
-    else:
-        print(f"Unknown operation type: {operation_type}")
-        return None
+    query_data = json.dumps({"student_id": student_id})
     
     try:
         result = subprocess.run(
-            [sys.executable, "Code/client/client.py", "student", operation_type, query_data],
+            [sys.executable, "Code/client/client.py", "student", "read", query_data],
             capture_output=True, text=True, timeout=30
         )
         if result.returncode == 0:
-            print(f"Client {client_id} completed {operation_type} successfully")
+            print(f"Client {client_id} completed successfully")
         else:
-            print(f"Client {client_id} failed {operation_type} with error: {result.stderr}")
+            print(f"Client {client_id} failed with error: {result.stderr}")
         return result
     except subprocess.TimeoutExpired:
-        print(f"Client {client_id} {operation_type} timed out")
+        print(f"Client {client_id} timed out")
         return None
 
 def main():
-    # Redirect all output to a file
-    log_file = open("test_all_ops.log", "w")
+    log_file = open("test_read_without_cache.log", "w")
     original_stdout = sys.stdout
     sys.stdout = log_file
-    
-    print("=== Distributed System Test Script ===")
-    print(f"Test started at: {time.strftime('%Y-%m-%d %H:%M:%S')}")
 
     print("=== Distributed System Test Script ===")
     
@@ -286,11 +253,11 @@ def main():
     time.sleep(2)
     
     # Start Gateway
-    # gateway_thread = threading.Thread(target=run_gateway, args=(gateway_module,))
-    # gateway_thread.daemon = True
-    # gateway_thread.start()
-    # threads.append(("Gateway", gateway_thread))
-    # time.sleep(2)
+    gateway_thread = threading.Thread(target=run_gateway, args=(gateway_module,))
+    gateway_thread.daemon = True
+    gateway_thread.start()
+    threads.append(("Gateway", gateway_thread))
+    time.sleep(2)
     
     # Start Backend
     backend_thread = threading.Thread(target=run_backend, args=(backend_module,))
@@ -311,61 +278,21 @@ def main():
     print("Waiting 10 seconds for system stabilization...\n")
     time.sleep(10)
     
-    # Create a distribution of operations
-    total_clients = 400
-    operations = ["read"] * total_clients  # Start with all reads
-    
-    # Generate random indices for create, update, and delete operations
-    indices = list(range(total_clients))
-    random.shuffle(indices)
-    
-    # Assign 10 create, 10 update, and 10 delete operations
-    create_indices = indices[:10]
-    update_indices = indices[10:20]
-    delete_indices = indices[20:30]
-    
-    for idx in create_indices:
-        operations[idx] = "create"
-    
-    for idx in update_indices:
-        operations[idx] = "update"
-    
-    for idx in delete_indices:
-        operations[idx] = "delete"
-    
-    # Print operation distribution statistics
-    op_count = {"create": 0, "read": 0, "update": 0, "delete": 0}
-    for op in operations:
-        op_count[op] += 1
-    
-    print("=== Operation Distribution ===")
-    for op, count in op_count.items():
-        print(f"  {op.upper()} operations: {count}")
-    print()
-    
-    # Spawn 400 clients, 100 at a time with 5-second gaps
+    # Spawn clients, batch_size at a time with 5-second gaps
     print("\n=== Running Client Load Test ===")
-    total_clients_processed = 0
+    total_clients = 0
     batch_size = 100
+    num_batches = 4
     
-    for batch in range(4):  # 4 batches of 100 = 400 clients
-        print(f"\nSpawning client batch {batch+1}/4 (clients {total_clients_processed+1}-{total_clients_processed+batch_size})...")
-        
-        # Count operations in this batch
-        batch_ops = operations[total_clients_processed:total_clients_processed+batch_size]
-        batch_op_count = {"create": 0, "read": 0, "update": 0, "delete": 0}
-        for op in batch_ops:
-            batch_op_count[op] += 1
-        
-        print(f"  This batch contains: CREATE: {batch_op_count['create']}, UPDATE: {batch_op_count['update']}, DELETE: {batch_op_count['delete']}, READ: {batch_op_count['read']}")
+    for batch in range(num_batches):  # 4 batches of 100 = 400 clients
+        print(f"\nSpawning client batch {batch+1}/{num_batches} (clients {total_clients+1}-{total_clients+batch_size})...")
         
         with ThreadPoolExecutor(max_workers=batch_size) as executor:
             # Submit client tasks
             futures = []
             for i in range(batch_size):
-                client_id = total_clients_processed + i
-                operation = operations[client_id]
-                futures.append(executor.submit(run_client, client_id, operation))
+                client_id = total_clients + i
+                futures.append(executor.submit(run_client, client_id))
             
             # Wait for all clients in this batch to complete
             for future in futures:
@@ -374,18 +301,17 @@ def main():
                 except Exception as e:
                     print(f"Client error: {e}")
         
-        total_clients_processed += batch_size
-        print(f"Batch {batch+1}/4 completed. Total clients processed: {total_clients_processed}")
+        total_clients += batch_size
+        print(f"Batch {batch+1}/{num_batches} completed. Total clients processed: {total_clients}")
         
         # Wait 5 seconds before next batch (except after the last batch)
-        if batch < 3:
+        if batch < num_batches - 1:
             print(f"Waiting 5 seconds before spawning batch {batch+2}...")
             time.sleep(5)
     
     print("\n=== Client Load Test Complete ===")
-    print(f"All {total_clients_processed} client operations completed!")
-    print(f"Final operation count: CREATE: {op_count['create']}, UPDATE: {op_count['update']}, DELETE: {op_count['delete']}, READ: {op_count['read']}")
-
+    print(f"All {total_clients} client operations completed!")
+    
     # Signal all components to shut down by setting the running flag to False
     print("\n=== Shutting Down Components ===")
     global running

@@ -54,8 +54,8 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
         self.load_from_file()
         
         # Set up signal handlers for graceful shutdown
-        signal.signal(signal.SIGINT, self.handle_shutdown)
-        signal.signal(signal.SIGTERM, self.handle_shutdown)
+        # signal.signal(signal.SIGINT, self.handle_shutdown)
+        # signal.signal(signal.SIGTERM, self.handle_shutdown)
 
         self.health_lock = threading.Lock()
         self.health_check_running = True
@@ -243,18 +243,18 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
             # Return true if we got enough acks, false otherwise
             return successful_replications >= num_replicas
 
-    def _send_and_track_ack(self, stub, query_hash, result, pending_replicas, acknowledged):
-        try:
-            ack = stub.SetResult(metadata_cache_channel_pb2.CacheSetRequest(
-                query_hash=query_hash, result=result))
-            if ack.success:
-                with self.lock:
-                    self.replica_status[stub]["offset"] += 1
-                    self.replica_status[stub]["failed_pings"] = 0
-                    pending_replicas.remove(stub)
-                    acknowledged.add(stub)
-        except grpc.RpcError:
-            self.handle_replica_timeout(stub)
+    # def _send_and_track_ack(self, stub, query_hash, result, pending_replicas, acknowledged):
+    #     try:
+    #         ack = stub.SetResult(metadata_cache_channel_pb2.CacheSetRequest(
+    #             query_hash=query_hash, result=result))
+    #         if ack.success:
+    #             with self.lock:
+    #                 self.replica_status[stub]["offset"] += 1
+    #                 self.replica_status[stub]["failed_pings"] = 0
+    #                 pending_replicas.remove(stub)
+    #                 acknowledged.add(stub)
+    #     except grpc.RpcError:
+    #         self.handle_replica_timeout(stub)
 
     def SetResult(self, request, context):
         query_hash = request.query_hash
@@ -285,6 +285,12 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
                 # Propagate invalidation to replicas if this is a primary
                 if self.is_primary:
                     self.propagate_entity_invalidation_to_replicas(entity)
+
+                self.offset += 1
+                self.replication_backlog.append((self.offset, "", "", entity, "invalidate"))
+                # Trim backlog if needed
+                if len(self.replication_backlog) > self.backlog_max_size:
+                    self.replication_backlog.pop(0)
                     
                 return metadata_cache_channel_pb2.CacheSetResponse(success=True)
             
@@ -483,12 +489,22 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
                                 break
                         
                         if matching_stub:
-                            response = matching_stub.SetResult(metadata_cache_channel_pb2.CacheSetRequest(
-                                query_hash=query_hash,
-                                result=result,
-                                entity=entity,
-                                operation=operation
-                            ))
+                            if operation == "invalidate":
+                                # For invalidation operations, use the InvalidateEntityCache method
+                                response = matching_stub.InvalidateEntityCache(
+                                    metadata_cache_channel_pb2.InvalidateEntityRequest(entity=entity)
+                                )
+                            else:
+                                # For regular operations, use SetResult
+                                response = matching_stub.SetResult(
+                                    metadata_cache_channel_pb2.CacheSetRequest(
+                                        query_hash=query_hash,
+                                        result=result,
+                                        entity=entity,
+                                        operation=operation
+                                    )
+                                )
+                                
                             if not response.success:
                                 success = False
                                 break
@@ -624,6 +640,12 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
                 
                 # Clear the entity index for this entity
                 self.entity_index[entity] = set()
+
+                self.offset += 1
+                self.replication_backlog.append((self.offset, "", "", entity, "invalidate"))
+                # Trim backlog if needed
+                if len(self.replication_backlog) > self.backlog_max_size:
+                    self.replication_backlog.pop(0)
         
         # Propagate invalidation to replicas if this is a primary
         if self.is_primary:
@@ -631,15 +653,15 @@ class CacheServer(metadata_cache_channel_pb2_grpc.CacheServiceServicer):
         
         return metadata_cache_channel_pb2.InvalidateEntityResponse(success=True)
     
-    def start_health_check_thread(self):
-        def health_check_handler():
-            while True:
-                # Process any pending health check requests with priority
-                time.sleep(0.1)  # Small sleep to prevent CPU spinning
+    # def start_health_check_thread(self):
+    #     def health_check_handler():
+    #         while True:
+    #             # Process any pending health check requests with priority
+    #             time.sleep(0.1)  # Small sleep to prevent CPU spinning
         
-        health_thread = threading.Thread(target=health_check_handler, daemon=True)
-        health_thread.start()
-        print(f"CacheServer {self.server_id}: Health check thread started")
+    #     health_thread = threading.Thread(target=health_check_handler, daemon=True)
+    #     health_thread.start()
+    #     print(f"CacheServer {self.server_id}: Health check thread started")
 
 
 
@@ -746,17 +768,17 @@ def register_with_load_balancer(server_id, port, cluster_id, load_balancer_addre
     except Exception as e:
         print(f"CacheServer {server_id}: Error registering with load balancer: {e}")
 
-def get_primary_port(cluster_id, sentinel_address="localhost", sentinel_port=70100):
-    try:
-        channel = grpc.insecure_channel(f"{sentinel_address}:{sentinel_port}")
-        stub = sentinel_pb2_grpc.SentinelServiceStub(channel)
-        request = sentinel_pb2.PrimaryForClusterRequest(cluster_id=cluster_id)
-        response = stub.GetPrimaryForCluster(request)
-        if response.found:
-            return response.port
-    except Exception as e:
-        print(f"Error querying sentinel for primary: {e}")
-    return None
+# def get_primary_port(cluster_id, sentinel_address="localhost", sentinel_port=70100):
+#     try:
+#         channel = grpc.insecure_channel(f"{sentinel_address}:{sentinel_port}")
+#         stub = sentinel_pb2_grpc.SentinelServiceStub(channel)
+#         request = sentinel_pb2.PrimaryForClusterRequest(cluster_id=cluster_id)
+#         response = stub.GetPrimaryForCluster(request)
+#         if response.found:
+#             return response.port
+#     except Exception as e:
+#         print(f"Error querying sentinel for primary: {e}")
+#     return None
 
 def serve(server_id, port, cluster_id, primary_port=None, ack_policy=0):
     # Register with the sentinel to determine role

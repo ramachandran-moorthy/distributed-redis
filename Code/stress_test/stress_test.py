@@ -8,6 +8,7 @@ import importlib.util
 from concurrent.futures import ThreadPoolExecutor
 import subprocess
 import signal
+import statistics
 
 # Global flag for graceful shutdown
 running = True

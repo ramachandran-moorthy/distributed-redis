@@ -8,6 +8,7 @@ import time
 import consul
 import threading
 from datetime import datetime
+import statistics
 
 sys.path.append(path.abspath(path.join(path.dirname(__file__), '../grpc')))
 
@@ -16,12 +17,28 @@ import load_balancer_pb2, load_balancer_pb2_grpc
 import backend_pb2, backend_pb2_grpc
 import heartbeat_pb2, heartbeat_pb2_grpc
 
+from prometheus_client import start_http_server, Summary, Histogram, Counter
+
+REQUEST_COUNT = Counter("gateway_requests_total", "Total number of requests")
+CACHE_HIT_COUNT = Counter("gateway_cache_hit_total", "Total number of cache hits")
+CACHE_MISS_COUNT = Counter("gateway_cache_miss_total", "Total number of cache misses")
+REQUEST_LATENCY = Histogram("gateway_request_latency_seconds", "Latency of gateway requests in seconds")
+RESPONSE_TIME = Histogram(
+    'gateway_response_time_seconds',
+    'Total response time for ProcessQuery in seconds'
+)
+
 # Global variable to track backend health status
 backend_health = {
     "last_check": datetime.now(),
     "is_healthy": True
 }
 health_lock = threading.Lock()
+
+request_latencies = []
+latency_lock = threading.Lock()
+
+cache_hits=0
 
 # Global variable for load balancer address
 load_balancer_address = "localhost:70000"  # Default, will be updated from Consul
@@ -134,6 +151,8 @@ def build_sql_from_query(query_data):
 
 class GatewayService(gateway_pb2_grpc.GatewayServiceServicer):
     def ProcessQuery(self, request, context):
+        REQUEST_COUNT.inc()
+        start_time = time.time()
         try:
             query_data = json.loads(request.json_query)
         except Exception as e:
@@ -170,9 +189,20 @@ class GatewayService(gateway_pb2_grpc.GatewayServiceServicer):
             cache_resp = type('obj', (object,), {'found': False})
         
         if cache_resp.found:
+        # if(1==0):
             print("Gateway: Cache hit.")
+            CACHE_HIT_COUNT.inc()
+            end_time = time.time()
+            latency = end_time - start_time
+            REQUEST_LATENCY.observe(latency)
+            RESPONSE_TIME.observe(latency)
+            with latency_lock:
+                global cache_hits
+                cache_hits+=1
+                request_latencies.append(latency)
             return gateway_pb2.GatewayResponse(response=cache_resp.value)
         else:
+            CACHE_MISS_COUNT.inc()
             print("Gateway: Cache miss. Building SQL query.")
             
             # If cache miss and backend is down, return error
@@ -185,6 +215,12 @@ class GatewayService(gateway_pb2_grpc.GatewayServiceServicer):
             try:
                 sql_query, params = build_sql_from_query(query_data)
             except ValueError as ve:
+                end_time = time.time()
+                latency = end_time - start_time
+                REQUEST_LATENCY.observe(latency)
+                RESPONSE_TIME.observe(latency)
+                with latency_lock:
+                    request_latencies.append(latency)
                 return gateway_pb2.GatewayResponse(response=json.dumps({"error": str(ve)}))
             
             # Call backend server via gRPC.
@@ -219,7 +255,10 @@ class GatewayService(gateway_pb2_grpc.GatewayServiceServicer):
             except grpc.RpcError as e:
                 print(f"Gateway: Warning: Failed to communicate with cache: {e}")
 
-            
+            end_time = time.time()
+            latency = end_time - start_time
+            with latency_lock:
+                request_latencies.append(latency)
             return gateway_pb2.GatewayResponse(response=backend_resp.result)
         
 def check_backend_health():
@@ -294,12 +333,23 @@ def serve():
     health_thread = threading.Thread(target=check_backend_health, daemon=True)
     health_thread.start()
     
+    start_http_server(8000)
+
     server.start()
     print(f"Gateway server started on port {port}")
     try:
         while True:
             time.sleep(86400)
     except KeyboardInterrupt:
+        with latency_lock:
+            if request_latencies:
+                avg_latency = statistics.mean(request_latencies)
+                print(f"\nAverage request latency: {avg_latency:.6f} seconds")
+                print(f"Total requests processed: {len(request_latencies)}")
+                print(f"Gateway: Total cache hits: {cache_hits}")
+                print(f"Cache hit ratio: {cache_hits/len(request_latencies):.2%}")
+            else:
+                print("\nNo requests were processed")
         server.stop(0)
 
 if __name__ == "__main__":
